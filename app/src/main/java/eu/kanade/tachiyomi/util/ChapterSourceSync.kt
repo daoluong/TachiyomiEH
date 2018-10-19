@@ -20,7 +20,7 @@ import java.util.*
 fun syncChaptersWithSource(db: DatabaseHelper,
                            rawSourceChapters: List<SChapter>,
                            manga: Manga,
-                           source: Source) : Pair<List<Chapter>, List<Chapter>> {
+                           source: Source): Pair<List<Chapter>, List<Chapter>> {
 
     if (rawSourceChapters.isEmpty()) {
         throw Exception("No chapters found")
@@ -38,7 +38,29 @@ fun syncChaptersWithSource(db: DatabaseHelper,
     }
 
     // Chapters from the source not in db.
-    val toAdd = sourceChapters.filterNot { it in dbChapters }
+    val toAdd = mutableListOf<Chapter>()
+
+    // Chapters whose metadata have changed.
+    val toChange = mutableListOf<Chapter>()
+
+    for (sourceChapter in sourceChapters) {
+        val dbChapter = dbChapters.find { it.url == sourceChapter.url }
+
+        // Add the chapter if not in db already, or update if the metadata changed.
+        if (dbChapter == null) {
+            toAdd.add(sourceChapter)
+        } else {
+            //this forces metadata update for the main viewable things in the chapter list
+            ChapterRecognition.parseChapterNumber(sourceChapter, manga)
+            if (shouldUpdateDbChapter(dbChapter, sourceChapter)) {
+                dbChapter.scanlator = sourceChapter.scanlator
+                dbChapter.name = sourceChapter.name
+                dbChapter.date_upload = sourceChapter.date_upload
+                dbChapter.chapter_number = sourceChapter.chapter_number
+                toChange.add(dbChapter)
+            }
+        }
+    }
 
     // Recognize number for new chapters.
     toAdd.forEach {
@@ -49,10 +71,14 @@ fun syncChaptersWithSource(db: DatabaseHelper,
     }
 
     // Chapters from the db not in the source.
-    val toDelete = dbChapters.filterNot { it in sourceChapters }
+    val toDelete = dbChapters.filterNot { dbChapter ->
+        sourceChapters.any { sourceChapter ->
+            dbChapter.url == sourceChapter.url
+        }
+    }
 
-    // Return if there's nothing to add or delete, avoiding unnecessary db transactions.
-    if (toAdd.isEmpty() && toDelete.isEmpty()) {
+    // Return if there's nothing to add, delete or change, avoiding unnecessary db transactions.
+    if (toAdd.isEmpty() && toDelete.isEmpty() && toChange.isEmpty()) {
         return Pair(emptyList(), emptyList())
     }
 
@@ -90,8 +116,24 @@ fun syncChaptersWithSource(db: DatabaseHelper,
             db.insertChapters(toAdd).executeAsBlocking()
         }
 
+        if (!toChange.isEmpty()) {
+            db.insertChapters(toChange).executeAsBlocking()
+        }
+
         // Fix order in source.
         db.fixChaptersSourceOrder(sourceChapters).executeAsBlocking()
+
+        // Set this manga as updated since chapters were changed
+        manga.last_update = Date().time
+        db.updateLastUpdated(manga).executeAsBlocking()
     }
     return Pair(toAdd.subtract(readded).toList(), toDelete.subtract(readded).toList())
+
+}
+
+//checks if the chapter in db needs updated
+private fun shouldUpdateDbChapter(dbChapter: Chapter, sourceChapter: SChapter): Boolean {
+    return dbChapter.scanlator != sourceChapter.scanlator || dbChapter.name != sourceChapter.name ||
+            dbChapter.date_upload != sourceChapter.date_upload ||
+            dbChapter.chapter_number != sourceChapter.chapter_number
 }

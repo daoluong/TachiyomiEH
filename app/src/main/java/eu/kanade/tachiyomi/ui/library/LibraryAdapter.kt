@@ -12,7 +12,7 @@ import eu.kanade.tachiyomi.widget.RecyclerViewPagerAdapter
  *
  * @constructor creates an instance of the adapter.
  */
-class LibraryAdapter(private val fragment: LibraryFragment) : RecyclerViewPagerAdapter() {
+class LibraryAdapter(private val controller: LibraryController) : RecyclerViewPagerAdapter() {
 
     /**
      * The categories to bind in the adapter.
@@ -26,14 +26,16 @@ class LibraryAdapter(private val fragment: LibraryFragment) : RecyclerViewPagerA
             }
         }
 
+    private var boundViews = arrayListOf<View>()
+
     /**
      * Creates a new view for this adapter.
      *
      * @return a new view.
      */
     override fun createView(container: ViewGroup): View {
-        val view = container.inflate(R.layout.item_library_category) as LibraryCategoryView
-        view.onCreate(fragment)
+        val view = container.inflate(R.layout.library_category) as LibraryCategoryView
+        view.onCreate(controller)
         return view
     }
 
@@ -45,6 +47,7 @@ class LibraryAdapter(private val fragment: LibraryFragment) : RecyclerViewPagerA
      */
     override fun bindView(view: View, position: Int) {
         (view as LibraryCategoryView).onBind(categories[position])
+        boundViews.add(view)
     }
 
     /**
@@ -55,6 +58,7 @@ class LibraryAdapter(private val fragment: LibraryFragment) : RecyclerViewPagerA
      */
     override fun recycleView(view: View, position: Int) {
         (view as LibraryCategoryView).onRecycle()
+        boundViews.remove(view)
     }
 
     /**
@@ -79,10 +83,21 @@ class LibraryAdapter(private val fragment: LibraryFragment) : RecyclerViewPagerA
     /**
      * Returns the position of the view.
      */
-    override fun getItemPosition(obj: Any?): Int {
+    override fun getItemPosition(obj: Any): Int {
         val view = obj as? LibraryCategoryView ?: return POSITION_NONE
         val index = categories.indexOfFirst { it.id == view.category.id }
         return if (index == -1) POSITION_NONE else index
+    }
+
+    /**
+     * Called when the view of this adapter is being destroyed.
+     */
+    fun onDestroy() {
+        for (view in boundViews) {
+            if (view is LibraryCategoryView) {
+                view.unsubscribe()
+            }
+        }
     }
 
 }

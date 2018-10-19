@@ -8,6 +8,7 @@ import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import eu.kanade.tachiyomi.data.track.TrackManager
+import eu.kanade.tachiyomi.ui.main.MainActivity
 import rx.android.schedulers.AndroidSchedulers
 import rx.schedulers.Schedulers
 import uy.kohesive.injekt.injectLazy
@@ -22,14 +23,15 @@ class AnilistLoginActivity : AppCompatActivity() {
         val view = ProgressBar(this)
         setContentView(view, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, CENTER))
 
-        val code = intent.data?.getQueryParameter("code")
-        if (code != null) {
-            trackManager.aniList.login(code)
+        val regex = "(?:access_token=)(.*?)(?:&)".toRegex()
+        val matchResult = regex.find(intent.data?.fragment.toString())
+        if (matchResult?.groups?.get(1) != null) {
+            trackManager.aniList.login(matchResult.groups[1]!!.value)
                     .subscribeOn(Schedulers.io())
                     .observeOn(AndroidSchedulers.mainThread())
                     .subscribe({
                         returnToSettings()
-                    }, { error ->
+                    }, { _ ->
                         returnToSettings()
                     })
         } else {
@@ -41,7 +43,7 @@ class AnilistLoginActivity : AppCompatActivity() {
     private fun returnToSettings() {
         finish()
 
-        val intent = Intent(this, SettingsActivity::class.java)
+        val intent = Intent(this, MainActivity::class.java)
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         startActivity(intent)
     }

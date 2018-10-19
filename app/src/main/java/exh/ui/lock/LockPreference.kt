@@ -1,12 +1,13 @@
 package exh.ui.lock
 
 import android.content.Context
-import android.support.v7.preference.Preference
+import android.support.v7.preference.SwitchPreferenceCompat
 import android.text.InputType
 import android.util.AttributeSet
 import com.afollestad.materialdialogs.MaterialDialog
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
+import eu.kanade.tachiyomi.ui.setting.onChange
 import rx.Observable
 import rx.android.schedulers.AndroidSchedulers
 import rx.schedulers.Schedulers
@@ -15,27 +16,33 @@ import java.math.BigInteger
 import java.security.SecureRandom
 
 class LockPreference @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) :
-        Preference(context, attrs) {
+        SwitchPreferenceCompat(context, attrs) {
 
-    val secureRandom by lazy { SecureRandom() }
+    private val secureRandom by lazy { SecureRandom() }
 
     val prefs: PreferencesHelper by injectLazy()
 
     override fun onAttached() {
         super.onAttached()
         updateSummary()
-    }
-
-    fun updateSummary() {
-        if(lockEnabled(prefs)) {
-            summary = "Application is locked"
-        } else {
-            summary = "Application is not locked, tap to lock"
+        onChange {
+            tryChange()
+            false
         }
     }
 
-    override fun onClick() {
-        super.onClick()
+    private fun updateSummary() {
+        isChecked = lockEnabled(prefs)
+        if(isChecked) {
+            title = "Lock enabled"
+            summary = "Tap to disable or change pin code"
+        } else {
+            title = "Lock disabled"
+            summary = "Tap to enable"
+        }
+    }
+
+    fun tryChange() {
         if(!notifyLockSecurity(context)) {
             MaterialDialog.Builder(context)
                     .title("Lock application")
@@ -65,7 +72,7 @@ class LockPreference @JvmOverloads constructor(context: Context, attrs: Attribut
         }
     }
 
-    fun savePassword(password: String) {
+    private fun savePassword(password: String) {
         val salt: String?
         val hash: String?
         val length: Int
@@ -78,8 +85,8 @@ class LockPreference @JvmOverloads constructor(context: Context, attrs: Attribut
             hash = sha512(password, salt)
             length = password.length
         }
-        prefs.lockSalt().set(salt)
-        prefs.lockHash().set(hash)
-        prefs.lockLength().set(length)
+        prefs.eh_lockSalt().set(salt)
+        prefs.eh_lockHash().set(hash)
+        prefs.eh_lockLength().set(length)
     }
 }

@@ -8,42 +8,46 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Build.VERSION_CODES.KITKAT
 import android.os.Bundle
-import android.support.v4.content.ContextCompat
 import android.view.*
 import android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS
 import android.view.animation.Animation
 import android.view.animation.AnimationUtils
 import android.widget.SeekBar
 import com.afollestad.materialdialogs.MaterialDialog
+import com.hippo.unifile.UniFile
+import com.jakewharton.rxbinding.view.clicks
+import com.jakewharton.rxbinding.widget.checkedChanges
+import com.jakewharton.rxbinding.widget.textChanges
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.database.models.Chapter
 import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
 import eu.kanade.tachiyomi.data.preference.getOrDefault
 import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.online.all.EHentai
 import eu.kanade.tachiyomi.ui.base.activity.BaseRxActivity
 import eu.kanade.tachiyomi.ui.reader.viewer.base.BaseReader
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.horizontal.LeftToRightReader
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.horizontal.RightToLeftReader
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.vertical.VerticalReader
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonReader
-import eu.kanade.tachiyomi.util.GLUtil
-import eu.kanade.tachiyomi.util.SharedData
-import eu.kanade.tachiyomi.util.plusAssign
-import eu.kanade.tachiyomi.util.toast
+import eu.kanade.tachiyomi.util.*
 import eu.kanade.tachiyomi.widget.SimpleAnimationListener
 import eu.kanade.tachiyomi.widget.SimpleSeekBarListener
-import kotlinx.android.synthetic.main.activity_reader.*
+import kotlinx.android.synthetic.main.reader_activity.*
 import me.zhanghai.android.systemuihelper.SystemUiHelper
 import me.zhanghai.android.systemuihelper.SystemUiHelper.*
 import nucleus.factory.RequiresPresenter
+import rx.Observable
 import rx.Subscription
 import rx.android.schedulers.AndroidSchedulers
 import rx.subscriptions.CompositeSubscription
 import timber.log.Timber
 import uy.kohesive.injekt.injectLazy
+import java.io.File
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToLong
 
 @RequiresPresenter(ReaderPresenter::class)
 class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
@@ -59,6 +63,9 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
         const val BLACK_THEME = 1
 
         const val MENU_VISIBLE = "menu_visible"
+        // --> EH
+        const val EH_UTILS_VISIBLE = "eh_utils_visible"
+        // <-- EH
 
         fun newIntent(context: Context, manga: Manga, chapter: Chapter): Intent {
             SharedData.put(ReaderEvent(manga, chapter))
@@ -69,6 +76,10 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
     private var viewer: BaseReader? = null
 
     val subscriptions by lazy { CompositeSubscription() }
+
+    // --> EH
+    private var autoscrollSubscription: Subscription? = null
+    // <-- EH
 
     private var customBrightnessSubscription: Subscription? = null
 
@@ -84,31 +95,49 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
 
     private val volumeKeysEnabled by lazy { preferences.readWithVolumeKeys().getOrDefault() }
 
+    private val volumeKeysInverted by lazy { preferences.readWithVolumeKeysInverted().getOrDefault() }
+
     val preferences by injectLazy<PreferencesHelper>()
 
     private var systemUi: SystemUiHelper? = null
 
     private var menuVisible = false
 
+    // --> EH
+    private var ehUtilsVisible = false
+    // <-- EH
+
     override fun onCreate(savedState: Bundle?) {
         super.onCreate(savedState)
-        setContentView(R.layout.activity_reader)
+        setContentView(R.layout.reader_activity)
 
         if (savedState == null && SharedData.get(ReaderEvent::class.java) == null) {
             finish()
             return
         }
 
-        setupToolbar(toolbar)
+        setSupportActionBar(toolbar)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        toolbar.setNavigationOnClickListener {
+            onBackPressed()
+        }
 
         initializeSettings()
         initializeBottomMenu()
 
         if (savedState != null) {
             menuVisible = savedState.getBoolean(MENU_VISIBLE)
+
+            // --> EH
+            ehUtilsVisible = savedState.getBoolean(EH_UTILS_VISIBLE)
+            // <-- EH
         }
 
         setMenuVisibility(menuVisible)
+
+        // --> EH
+        setEhUtilsVisibility(ehUtilsVisible)
+        // <-- EH
 
         maxBitmapSize = GLUtil.getMaxTextureSize()
 
@@ -128,9 +157,133 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                     requestNextChapter()
             }
         }
+
+        // --> EH
+        subscriptions += expand_eh_button.clicks().subscribe {
+            ehUtilsVisible = !ehUtilsVisible
+            setEhUtilsVisibility(ehUtilsVisible)
+        }
+
+        eh_autoscroll_freq.setText(preferences.eh_utilAutoscrollInterval().getOrDefault().let {
+            if(it == -1f)
+                ""
+            else it.toString()
+        })
+
+        subscriptions += eh_autoscroll.checkedChanges()
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe {
+                    setupAutoscroll(if(it)
+                        preferences.eh_utilAutoscrollInterval().getOrDefault()
+                    else -1f)
+                }
+
+        subscriptions += eh_autoscroll_freq.textChanges()
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe {
+                    val parsed = it?.toString()?.toFloatOrNull()
+
+                    if (parsed == null || parsed <= 0 || parsed > 9999) {
+                        eh_autoscroll_freq.error = "Invalid frequency"
+                        preferences.eh_utilAutoscrollInterval().set(-1f)
+                        eh_autoscroll.isEnabled = false
+                        setupAutoscroll(-1f)
+                    } else {
+                        eh_autoscroll_freq.error = null
+                        preferences.eh_utilAutoscrollInterval().set(parsed)
+                        eh_autoscroll.isEnabled = true
+                        setupAutoscroll(if(eh_autoscroll.isChecked) parsed else -1f)
+                    }
+                }
+
+        subscriptions += eh_autoscroll_help.clicks().subscribe {
+            MaterialDialog.Builder(this)
+                    .title("Autoscroll help")
+                    .content("Automatically scroll to the next page in the specified interval. Interval is specified in seconds.")
+                    .positiveText("Ok")
+                    .show()
+        }
+
+        subscriptions += eh_retry_all.clicks().subscribe {
+            var retried = 0
+
+            viewer?.chapters
+                    ?.flatMap { it.pages ?: emptyList() }
+                    ?.forEachIndexed { index, page ->
+                        var shouldQueuePage = false
+                        if(page.status == Page.ERROR) {
+                            shouldQueuePage = true
+                        } else if(page.status == Page.LOAD_PAGE
+                                || page.status == Page.DOWNLOAD_IMAGE) {
+                            // Do nothing
+                        } else if (page.uri == null) {
+                            shouldQueuePage = true
+                        } else if (!UniFile.fromUri(this, page.uri).exists()) {
+                            shouldQueuePage = true
+                        }
+
+                        if(shouldQueuePage) {
+                            page.status = Page.QUEUE
+                        } else {
+                            return@forEachIndexed
+                        }
+
+                        //If we are using EHentai/ExHentai, get a new image URL
+                        if(presenter.source is EHentai)
+                            page.imageUrl = null
+
+                        if(viewer?.currentPage == index)
+                            presenter.loader.loadPriorizedPage(page)
+                        else
+                            presenter.loader.loadPage(page)
+
+                        retried++
+                    }
+
+            toast("Retrying $retried failed pages...")
+        }
+
+        subscriptions += eh_retry_all_help.clicks().subscribe {
+            MaterialDialog.Builder(this)
+                    .title("Retry all help")
+                    .content("Re-add all failed pages to the download queue.")
+                    .positiveText("Ok")
+                    .show()
+        }
+
+        subscriptions += eh_boost_page.clicks().subscribe {
+            viewer?.let { viewer ->
+                val curPage = viewer.pages.getOrNull(viewer.currentPage)
+                        ?: run {
+                            toast("Cannot find current page!")
+                            return@let
+                        }
+
+                if(curPage.status == Page.ERROR) {
+                    toast("Page failed to load, press the retry button instead!")
+                } else if(curPage.status == Page.LOAD_PAGE || curPage.status == Page.DOWNLOAD_IMAGE) {
+                    toast("This page is already downloading!")
+                } else if(curPage.status == Page.READY) {
+                    toast("This page has already been downloaded!")
+                } else {
+                    presenter.loader.boostPage(curPage)
+                    toast("Boosted current page!")
+                }
+            }
+        }
+
+        subscriptions += eh_boost_page_help.clicks().subscribe {
+            MaterialDialog.Builder(this)
+                    .title("Boost page help")
+                    .content("Normally the downloader can only download a specific amount of pages at the same time. This means you can be waiting for a page to download but the downloader will not start downloading the page until it has a free download slot. Pressing 'Boost page' will force the downloader to begin downloading the current page, regardless of whether or not there is an available slot.")
+                    .positiveText("Ok")
+                    .show()
+        }
+        // <-- EH
     }
 
     override fun onDestroy() {
+        toolbar.setNavigationOnClickListener(null)
         subscriptions.unsubscribe()
         viewer = null
         super.onDestroy()
@@ -152,6 +305,11 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(MENU_VISIBLE, menuVisible)
+
+        // --> EH
+        outState.putBoolean(EH_UTILS_VISIBLE, eh_utils.visibility == View.VISIBLE)
+        // <-- EH
+
         super.onSaveInstanceState(outState)
     }
 
@@ -171,8 +329,8 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                         .content(getString(R.string.confirm_update_manga_sync, chapterToUpdate))
                         .positiveText(android.R.string.yes)
                         .negativeText(android.R.string.no)
-                        .onPositive { dialog, which -> presenter.updateTrackLastChapterRead(chapterToUpdate) }
-                        .onAny { dialog1, which1 -> super.onBackPressed() }
+                        .onPositive { _, _ -> presenter.updateTrackLastChapterRead(chapterToUpdate) }
+                        .onAny { _, _ -> super.onBackPressed() }
                         .show()
             } else {
                 presenter.updateTrackLastChapterRead(chapterToUpdate)
@@ -189,7 +347,7 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                 KeyEvent.KEYCODE_VOLUME_DOWN -> {
                     if (volumeKeysEnabled) {
                         if (event.action == KeyEvent.ACTION_UP) {
-                            viewer?.moveDown()
+                            if (!volumeKeysInverted) viewer?.moveDown() else viewer?.moveUp()
                         }
                         return true
                     }
@@ -197,7 +355,7 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                 KeyEvent.KEYCODE_VOLUME_UP -> {
                     if (volumeKeysEnabled) {
                         if (event.action == KeyEvent.ACTION_UP) {
-                            viewer?.moveUp()
+                            if (!volumeKeysInverted) viewer?.moveUp() else viewer?.moveDown()
                         }
                         return true
                     }
@@ -214,6 +372,8 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                 KeyEvent.KEYCODE_DPAD_LEFT -> viewer?.moveLeft()
                 KeyEvent.KEYCODE_DPAD_DOWN -> viewer?.moveDown()
                 KeyEvent.KEYCODE_DPAD_UP -> viewer?.moveUp()
+                KeyEvent.KEYCODE_PAGE_DOWN -> viewer?.moveDown()
+                KeyEvent.KEYCODE_PAGE_UP -> viewer?.moveUp()
                 KeyEvent.KEYCODE_MENU -> toggleMenu()
                 else -> return super.onKeyUp(keyCode, event)
             }
@@ -232,7 +392,7 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                 .title(getString(R.string.options))
                 .items(R.array.reader_image_options)
                 .itemsIds(R.array.reader_image_options_values)
-                .itemsCallback { materialDialog, view, i, charSequence ->
+                .itemsCallback { _, _, i, _ ->
                     when (i) {
                         0 -> setImageAsCover(page)
                         1 -> shareImage(page)
@@ -256,7 +416,7 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
             // Invert the seekbar for the right to left reader
             page_seekbar.rotation = 180f
         }
-        setToolbarTitle(manga.title)
+        supportActionBar?.title = manga.title
         please_wait.visibility = View.VISIBLE
         please_wait.startAnimation(AnimationUtils.loadAnimation(this, R.anim.fade_in_long))
     }
@@ -292,10 +452,10 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
         page_seekbar.max = numPages - 1
         page_seekbar.progress = currentPage
 
-        setToolbarSubtitle(if (chapter.isRecognizedNumber)
+        supportActionBar?.subtitle = if (chapter.isRecognizedNumber)
             getString(R.string.chapter_subtitle, decimalFormat.format(chapter.chapter_number.toDouble()))
         else
-            chapter.name)
+            chapter.name
     }
 
     fun onAppendChapter(chapter: ReaderChapter) {
@@ -377,7 +537,7 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
 
     private fun initializeBottomMenu() {
         // Intercept all events in this layout
-        reader_menu_bottom.setOnTouchListener { v, event -> true }
+        reader_menu_bottom.setOnTouchListener { _, _ -> true }
 
         page_seekbar.setOnSeekBarChangeListener(object : SimpleSeekBarListener() {
             override fun onProgressChanged(seekBar: SeekBar, value: Int, fromUser: Boolean) {
@@ -414,16 +574,16 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
 
     private fun setRotation(rotation: Int) {
         when (rotation) {
-            // Rotation free
+        // Rotation free
             1 -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            // Lock in current rotation
+        // Lock in current rotation
             2 -> {
                 val currentOrientation = resources.configuration.orientation
                 setRotation(if (currentOrientation == Configuration.ORIENTATION_PORTRAIT) 3 else 4)
             }
-            // Lock in portrait
+        // Lock in portrait
             3 -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            // Lock in landscape
+        // Lock in landscape
             4 -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
     }
@@ -512,14 +672,22 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
         val rootView = window.decorView.rootView
         if (theme == BLACK_THEME) {
             rootView.setBackgroundColor(Color.BLACK)
-            page_number.setTextColor(ContextCompat.getColor(this, R.color.textColorPrimaryDark))
-            page_number.setBackgroundColor(ContextCompat.getColor(this, R.color.pageNumberBackgroundDark))
         } else {
             rootView.setBackgroundColor(Color.WHITE)
-            page_number.setTextColor(ContextCompat.getColor(this, R.color.textColorPrimaryLight))
-            page_number.setBackgroundColor(ContextCompat.getColor(this, R.color.pageNumberBackgroundLight))
         }
     }
+
+    // --> EH
+    private fun setEhUtilsVisibility(visible: Boolean) {
+        if(visible) {
+            eh_utils.visible()
+            expand_eh_button.setImageResource(R.drawable.ic_keyboard_arrow_up_white_32dp)
+        } else {
+            eh_utils.gone()
+            expand_eh_button.setImageResource(R.drawable.ic_keyboard_arrow_down_white_32dp)
+        }
+    }
+    // <-- EH
 
     private fun setMenuVisibility(visible: Boolean, animate: Boolean = true) {
         menuVisible = visible
@@ -537,10 +705,13 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                         }
                     }
                 })
-                toolbar.startAnimation(toolbarAnimation)
+                header.startAnimation(toolbarAnimation)
 
                 val bottomMenuAnimation = AnimationUtils.loadAnimation(this, R.anim.enter_from_bottom)
+                // --> EH
+//                toolbar.startAnimation(bottomMenuAnimation)
                 reader_menu_bottom.startAnimation(bottomMenuAnimation)
+                // <-- EH
             }
         } else {
             systemUi?.hide()
@@ -552,10 +723,13 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                         reader_menu.visibility = View.GONE
                     }
                 })
-                toolbar.startAnimation(toolbarAnimation)
+                header.startAnimation(toolbarAnimation)
 
                 val bottomMenuAnimation = AnimationUtils.loadAnimation(this, R.anim.exit_to_bottom)
+                // --> EH
+//                toolbar.startAnimation(bottomMenuAnimation)
                 reader_menu_bottom.startAnimation(bottomMenuAnimation)
+                // <-- EH
             }
         }
     }
@@ -569,8 +743,12 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
         if (page.status != Page.READY)
             return
 
+        var uri = page.uri ?: return
+        if (uri.toString().startsWith("file://")) {
+            uri = File(uri.toString().substringAfter("file://")).getUriCompat(this)
+        }
         val intent = Intent(Intent.ACTION_SEND).apply {
-            putExtra(Intent.EXTRA_STREAM, page.uri)
+            putExtra(Intent.EXTRA_STREAM, uri)
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
             type = "image/*"
         }
@@ -590,9 +768,30 @@ class ReaderActivity : BaseRxActivity<ReaderPresenter>() {
                 .content(getString(R.string.confirm_set_image_as_cover))
                 .positiveText(android.R.string.yes)
                 .negativeText(android.R.string.no)
-                .onPositive { dialog, which -> presenter.setImageAsCover(page) }
+                .onPositive { _, _ -> presenter.setImageAsCover(page) }
                 .show()
 
     }
 
+    // --> EH
+    private fun setupAutoscroll(interval: Float) {
+        subscriptions.remove(autoscrollSubscription)
+        autoscrollSubscription = null
+
+        if(interval == -1f) return
+
+        val intervalMs = (interval * 1000).roundToLong()
+        val sub = Observable.interval(intervalMs, intervalMs, TimeUnit.MILLISECONDS)
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe {
+                    if(viewer is RightToLeftReader)
+                        viewer?.moveLeft()
+                    else
+                        viewer?.moveRight()
+                }
+
+        autoscrollSubscription = sub
+        subscriptions += sub
+    }
+    // <-- EH
 }

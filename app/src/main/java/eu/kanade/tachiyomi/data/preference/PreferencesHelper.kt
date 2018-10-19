@@ -11,14 +11,13 @@ import eu.kanade.tachiyomi.data.track.TrackService
 import eu.kanade.tachiyomi.source.Source
 import exh.ui.migration.MigrationStatus
 import java.io.File
+import eu.kanade.tachiyomi.data.preference.PreferenceKeys as Keys
 
 fun <T> Preference<T>.getOrDefault(): T = get() ?: defaultValue()!!
 
 fun Preference<Boolean>.invert(): Boolean = getOrDefault().let { set(!it); !it }
 
 class PreferencesHelper(val context: Context) {
-
-    val keys = PreferenceKeys(context)
 
     private val prefs = PreferenceManager.getDefaultSharedPreferences(context)
     private val rxPrefs = RxSharedPreferences.create(prefs)
@@ -31,138 +30,150 @@ class PreferencesHelper(val context: Context) {
             File(Environment.getExternalStorageDirectory().absolutePath + File.separator +
                     context.getString(R.string.app_name), "backup"))
 
-    fun startScreen() = prefs.getInt(keys.startScreen, 1)
+    fun startScreen() = prefs.getInt(Keys.startScreen, 1)
 
     fun clear() = prefs.edit().clear().apply()
 
-    fun theme() = prefs.getInt(keys.theme, 1)
+    fun theme() = prefs.getInt(Keys.theme, 1)
 
-    fun rotation() = rxPrefs.getInteger(keys.rotation, 1)
+    fun rotation() = rxPrefs.getInteger(Keys.rotation, 1)
 
-    fun pageTransitions() = rxPrefs.getBoolean(keys.enableTransitions, true)
+    fun pageTransitions() = rxPrefs.getBoolean(Keys.enableTransitions, true)
 
-    fun showPageNumber() = rxPrefs.getBoolean(keys.showPageNumber, true)
+    fun doubleTapAnimSpeed() = rxPrefs.getInteger(Keys.doubleTapAnimationSpeed, 500)
 
-    fun fullscreen() = rxPrefs.getBoolean(keys.fullscreen, true)
+    fun showPageNumber() = rxPrefs.getBoolean(Keys.showPageNumber, true)
 
-    fun keepScreenOn() = rxPrefs.getBoolean(keys.keepScreenOn, true)
+    fun fullscreen() = rxPrefs.getBoolean(Keys.fullscreen, true)
 
-    fun customBrightness() = rxPrefs.getBoolean(keys.customBrightness, false)
+    fun keepScreenOn() = rxPrefs.getBoolean(Keys.keepScreenOn, true)
 
-    fun customBrightnessValue() = rxPrefs.getInteger(keys.customBrightnessValue, 0)
+    fun customBrightness() = rxPrefs.getBoolean(Keys.customBrightness, false)
 
-    fun colorFilter() = rxPrefs.getBoolean(keys.colorFilter, false)
+    fun customBrightnessValue() = rxPrefs.getInteger(Keys.customBrightnessValue, 0)
 
-    fun colorFilterValue() = rxPrefs.getInteger(keys.colorFilterValue, 0)
+    fun colorFilter() = rxPrefs.getBoolean(Keys.colorFilter, false)
 
-    fun defaultViewer() = prefs.getInt(keys.defaultViewer, 1)
+    fun colorFilterValue() = rxPrefs.getInteger(Keys.colorFilterValue, 0)
 
-    fun imageScaleType() = rxPrefs.getInteger(keys.imageScaleType, 1)
+    fun defaultViewer() = prefs.getInt(Keys.defaultViewer, 1)
 
-    fun imageDecoder() = rxPrefs.getInteger(keys.imageDecoder, 0)
+    fun imageScaleType() = rxPrefs.getInteger(Keys.imageScaleType, 1)
 
-    fun zoomStart() = rxPrefs.getInteger(keys.zoomStart, 1)
+    fun imageDecoder() = rxPrefs.getInteger(Keys.imageDecoder, 0)
 
-    fun readerTheme() = rxPrefs.getInteger(keys.readerTheme, 0)
+    fun zoomStart() = rxPrefs.getInteger(Keys.zoomStart, 1)
 
-    fun cropBorders() = rxPrefs.getBoolean(keys.cropBorders, false)
+    fun readerTheme() = rxPrefs.getInteger(Keys.readerTheme, 0)
 
-    fun readWithTapping() = rxPrefs.getBoolean(keys.readWithTapping, true)
+    fun cropBorders() = rxPrefs.getBoolean(Keys.cropBorders, false)
 
-    fun readWithVolumeKeys() = rxPrefs.getBoolean(keys.readWithVolumeKeys, false)
+    fun cropBordersWebtoon() = rxPrefs.getBoolean(Keys.cropBordersWebtoon, false)
 
-    fun portraitColumns() = rxPrefs.getInteger(keys.portraitColumns, 0)
+    fun readWithTapping() = rxPrefs.getBoolean(Keys.readWithTapping, true)
 
-    fun landscapeColumns() = rxPrefs.getInteger(keys.landscapeColumns, 0)
+    fun readWithVolumeKeys() = rxPrefs.getBoolean(Keys.readWithVolumeKeys, false)
 
-    fun updateOnlyNonCompleted() = prefs.getBoolean(keys.updateOnlyNonCompleted, false)
+    fun readWithVolumeKeysInverted() = rxPrefs.getBoolean(Keys.readWithVolumeKeysInverted, false)
 
-    fun autoUpdateTrack() = prefs.getBoolean(keys.autoUpdateTrack, true)
+    fun portraitColumns() = rxPrefs.getInteger(Keys.portraitColumns, 0)
 
-    fun askUpdateTrack() = prefs.getBoolean(keys.askUpdateTrack, false)
+    fun landscapeColumns() = rxPrefs.getInteger(Keys.landscapeColumns, 0)
 
-    fun lastUsedCatalogueSource() = rxPrefs.getLong(keys.lastUsedCatalogueSource, -1)
+    fun updateOnlyNonCompleted() = prefs.getBoolean(Keys.updateOnlyNonCompleted, false)
 
-    fun lastUsedCategory() = rxPrefs.getInteger(keys.lastUsedCategory, 0)
+    fun autoUpdateTrack() = prefs.getBoolean(Keys.autoUpdateTrack, true)
+
+    fun askUpdateTrack() = prefs.getBoolean(Keys.askUpdateTrack, false)
+
+    fun lastUsedCatalogueSource() = rxPrefs.getLong(Keys.lastUsedCatalogueSource, -1)
+
+    fun lastUsedCategory() = rxPrefs.getInteger(Keys.lastUsedCategory, 0)
 
     fun lastVersionCode() = rxPrefs.getInteger("last_version_code", 0)
 
-    fun catalogueAsList() = rxPrefs.getBoolean(keys.catalogueAsList, false)
+    fun catalogueAsList() = rxPrefs.getBoolean(Keys.catalogueAsList, false)
 
-    fun enabledLanguages() = rxPrefs.getStringSet(keys.enabledLanguages, setOf("all"))
+    fun enabledLanguages() = rxPrefs.getStringSet(Keys.enabledLanguages, setOf("all"))
 
-    fun sourceUsername(source: Source) = prefs.getString(keys.sourceUsername(source.id), "")
+    fun sourceUsername(source: Source) = prefs.getString(Keys.sourceUsername(source.id), "")
 
-    fun sourcePassword(source: Source) = prefs.getString(keys.sourcePassword(source.id), "")
+    fun sourcePassword(source: Source) = prefs.getString(Keys.sourcePassword(source.id), "")
 
     fun setSourceCredentials(source: Source, username: String, password: String) {
         prefs.edit()
-                .putString(keys.sourceUsername(source.id), username)
-                .putString(keys.sourcePassword(source.id), password)
+                .putString(Keys.sourceUsername(source.id), username)
+                .putString(Keys.sourcePassword(source.id), password)
                 .apply()
     }
 
-    fun trackUsername(sync: TrackService) = prefs.getString(keys.trackUsername(sync.id), "")
+    fun trackUsername(sync: TrackService) = prefs.getString(Keys.trackUsername(sync.id), "")
 
-    fun trackPassword(sync: TrackService) = prefs.getString(keys.trackPassword(sync.id), "")
+    fun trackPassword(sync: TrackService) = prefs.getString(Keys.trackPassword(sync.id), "")
 
     fun setTrackCredentials(sync: TrackService, username: String, password: String) {
         prefs.edit()
-                .putString(keys.trackUsername(sync.id), username)
-                .putString(keys.trackPassword(sync.id), password)
+                .putString(Keys.trackUsername(sync.id), username)
+                .putString(Keys.trackPassword(sync.id), password)
                 .apply()
     }
 
-    fun trackToken(sync: TrackService) = rxPrefs.getString(keys.trackToken(sync.id), "")
+    fun trackToken(sync: TrackService) = rxPrefs.getString(Keys.trackToken(sync.id), "")
 
-    fun anilistScoreType() = rxPrefs.getInteger("anilist_score_type", 0)
+    fun anilistScoreType() = rxPrefs.getString("anilist_score_type", "POINT_10")
 
-    fun backupsDirectory() = rxPrefs.getString(keys.backupDirectory, defaultBackupDir.toString())
+    fun backupsDirectory() = rxPrefs.getString(Keys.backupDirectory, defaultBackupDir.toString())
 
-    fun downloadsDirectory() = rxPrefs.getString(keys.downloadsDirectory, defaultDownloadsDir.toString())
+    fun downloadsDirectory() = rxPrefs.getString(Keys.downloadsDirectory, defaultDownloadsDir.toString())
 
-    fun downloadThreads() = rxPrefs.getInteger(keys.downloadThreads, 1)
+    fun downloadOnlyOverWifi() = prefs.getBoolean(Keys.downloadOnlyOverWifi, true)
 
-    fun downloadOnlyOverWifi() = prefs.getBoolean(keys.downloadOnlyOverWifi, true)
+    fun numberOfBackups() = rxPrefs.getInteger(Keys.numberOfBackups, 1)
 
-    fun numberOfBackups() = rxPrefs.getInteger(keys.numberOfBackups, 1)
+    fun backupInterval() = rxPrefs.getInteger(Keys.backupInterval, 0)
 
-    fun backupInterval() = rxPrefs.getInteger(keys.backupInterval, 0)
+    fun removeAfterReadSlots() = prefs.getInt(Keys.removeAfterReadSlots, -1)
 
-    fun removeAfterReadSlots() = prefs.getInt(keys.removeAfterReadSlots, -1)
+    fun removeAfterMarkedAsRead() = prefs.getBoolean(Keys.removeAfterMarkedAsRead, false)
 
-    fun removeAfterMarkedAsRead() = prefs.getBoolean(keys.removeAfterMarkedAsRead, false)
+    fun libraryUpdateInterval() = rxPrefs.getInteger(Keys.libraryUpdateInterval, 0)
 
-    fun libraryUpdateInterval() = rxPrefs.getInteger(keys.libraryUpdateInterval, 0)
+    fun libraryUpdateRestriction() = prefs.getStringSet(Keys.libraryUpdateRestriction, emptySet())
 
-    fun libraryUpdateRestriction() = prefs.getStringSet(keys.libraryUpdateRestriction, emptySet())
+    fun libraryUpdateCategories() = rxPrefs.getStringSet(Keys.libraryUpdateCategories, emptySet())
 
-    fun libraryUpdateCategories() = rxPrefs.getStringSet(keys.libraryUpdateCategories, emptySet())
+    fun libraryAsList() = rxPrefs.getBoolean(Keys.libraryAsList, false)
 
-    fun libraryAsList() = rxPrefs.getBoolean(keys.libraryAsList, false)
+    fun downloadBadge() = rxPrefs.getBoolean(Keys.downloadBadge, false)
 
-    fun filterDownloaded() = rxPrefs.getBoolean(keys.filterDownloaded, false)
+    fun filterDownloaded() = rxPrefs.getBoolean(Keys.filterDownloaded, false)
 
-    fun filterUnread() = rxPrefs.getBoolean(keys.filterUnread, false)
+    fun filterUnread() = rxPrefs.getBoolean(Keys.filterUnread, false)
 
-    fun librarySortingMode() = rxPrefs.getInteger(keys.librarySortingMode, 0)
+    fun filterCompleted() = rxPrefs.getBoolean(Keys.filterCompleted, false)
+
+    fun librarySortingMode() = rxPrefs.getInteger(Keys.librarySortingMode, 0)
 
     fun librarySortingAscending() = rxPrefs.getBoolean("library_sorting_ascending", true)
 
-    fun automaticUpdates() = prefs.getBoolean(keys.automaticUpdates, false)
+    fun automaticUpdates() = prefs.getBoolean(Keys.automaticUpdates, false)
 
     fun hiddenCatalogues() = rxPrefs.getStringSet("hidden_catalogues", emptySet())
 
-    fun downloadNew() = rxPrefs.getBoolean(keys.downloadNew, false)
+    fun downloadNew() = rxPrefs.getBoolean(Keys.downloadNew, false)
 
-    fun downloadNewCategories() = rxPrefs.getStringSet(keys.downloadNewCategories, emptySet())
+    fun downloadNewCategories() = rxPrefs.getStringSet(Keys.downloadNewCategories, emptySet())
 
-    fun lang() = prefs.getString(keys.lang, "")
+    fun lang() = prefs.getString(Keys.lang, "")
 
-    fun defaultCategory() = prefs.getInt(keys.defaultCategory, -1)
+    fun defaultCategory() = prefs.getInt(Keys.defaultCategory, -1)
 
-    //EH
-    fun enableExhentai() = rxPrefs.getBoolean("enable_exhentai", false)
+    fun migrateFlags() = rxPrefs.getInteger("migrate_flags", Int.MAX_VALUE)
+
+    fun trustedSignatures() = rxPrefs.getStringSet("trusted_signatures", emptySet())
+
+    // --> EH
+    fun enableExhentai() = rxPrefs.getBoolean(Keys.eh_enableExHentai, false)
 
     fun secureEXH() = rxPrefs.getBoolean("secure_exh", true)
 
@@ -172,27 +183,74 @@ class PreferencesHelper(val context: Context) {
 
     fun useJapaneseTitle() = rxPrefs.getBoolean("use_jp_title", false)
 
+    fun eh_useOriginalImages() = rxPrefs.getBoolean(Keys.eh_useOrigImages, false)
+
     fun ehSearchSize() = rxPrefs.getString("ex_search_size", "rc_0")
 
     fun thumbnailRows() = rxPrefs.getString("ex_thumb_rows", "tr_2")
 
-    fun migrateLibraryAsked() = rxPrefs.getBoolean("ex_migrate_library", false)
+    fun migrateLibraryAsked2() = rxPrefs.getBoolean("ex_migrate_library2", false)
 
     fun migrationStatus() = rxPrefs.getInteger("migration_status", MigrationStatus.NOT_INITIALIZED)
 
     fun hasPerformedURLMigration() = rxPrefs.getBoolean("performed_url_migration", false)
 
-    fun hasPerformedSourceMigration() = rxPrefs.getBoolean("performed_source_migration", false)
-
     //EH Cookies
     fun memberIdVal() = rxPrefs.getString("eh_ipb_member_id", null)
     fun passHashVal() = rxPrefs.getString("eh_ipb_pass_hash", null)
     fun igneousVal() = rxPrefs.getString("eh_igneous", null)
+    fun eh_ehSettingsProfile() = rxPrefs.getInteger(Keys.eh_ehSettingsProfile, -1)
+    fun eh_exhSettingsProfile() = rxPrefs.getInteger(Keys.eh_exhSettingsProfile, -1)
+    fun eh_settingsKey() = rxPrefs.getString(Keys.eh_settingsKey, "")
+    fun eh_sessionCookie() = rxPrefs.getString(Keys.eh_sessionCookie, "")
+    fun eh_hathPerksCookies() = rxPrefs.getString(Keys.eh_hathPerksCookie, "")
 
     //Lock
-    fun lockHash() = rxPrefs.getString("lock_hash", null)
+    fun eh_lockHash() = rxPrefs.getString(Keys.eh_lock_hash, null)
 
-    fun lockSalt() = rxPrefs.getString("lock_salt", null)
+    fun eh_lockSalt() = rxPrefs.getString(Keys.eh_lock_salt, null)
 
-    fun lockLength() = rxPrefs.getInteger("lock_length", -1)
+    fun eh_lockLength() = rxPrefs.getInteger(Keys.eh_lock_length, -1)
+
+    fun eh_lockUseFingerprint() = rxPrefs.getBoolean(Keys.eh_lock_finger, false)
+
+    fun eh_lockManually() = rxPrefs.getBoolean(Keys.eh_lock_manually, false)
+
+    fun eh_nh_useHighQualityThumbs() = rxPrefs.getBoolean(Keys.eh_nh_useHighQualityThumbs, false)
+
+    fun eh_showSyncIntro() = rxPrefs.getBoolean(Keys.eh_showSyncIntro, true)
+
+    fun eh_readOnlySync() = rxPrefs.getBoolean(Keys.eh_readOnlySync, false)
+
+    fun eh_lenientSync() = rxPrefs.getBoolean(Keys.eh_lenientSync, false)
+
+    fun eh_ts_aspNetCookie() = rxPrefs.getString(Keys.eh_ts_aspNetCookie, "")
+
+    fun eh_showSettingsUploadWarning() = rxPrefs.getBoolean(Keys.eh_showSettingsUploadWarning, true)
+
+    // Default is 24h, refresh daily
+    fun eh_hl_earlyRefresh() = rxPrefs.getBoolean(Keys.eh_hl_earlyRefresh, false)
+
+    fun eh_hl_refreshFrequency() = rxPrefs.getString(Keys.eh_hl_refreshFrequency, "24")
+
+    fun eh_hl_lastRefresh() = rxPrefs.getLong(Keys.eh_hl_lastRefresh, 0L)
+
+    fun eh_hl_lastRealmIndex() = rxPrefs.getInteger(Keys.eh_hl_lastRealmIndex, -1)
+    // <-- EH
+
+    fun eh_expandFilters() = rxPrefs.getBoolean(Keys.eh_expandFilters, false)
+
+    fun eh_readerThreads() = rxPrefs.getInteger(Keys.eh_readerThreads, 2)
+
+    fun eh_readerInstantRetry() = rxPrefs.getBoolean(Keys.eh_readerInstantRetry, true)
+
+    fun eh_utilAutoscrollInterval() = rxPrefs.getFloat(Keys.eh_utilAutoscrollInterval, 3f)
+
+    fun eh_cacheSize() = rxPrefs.getString(Keys.eh_cacheSize, "75")
+
+    fun eh_preserveReadingPosition() = rxPrefs.getBoolean(Keys.eh_preserveReadingPosition, false)
+
+    fun eh_incogWebview() = rxPrefs.getBoolean(Keys.eh_incogWebview, false)
+
+    fun eh_askCategoryOnLongPress() = rxPrefs.getBoolean(Keys.eh_askCategoryOnLongPress, false)
 }

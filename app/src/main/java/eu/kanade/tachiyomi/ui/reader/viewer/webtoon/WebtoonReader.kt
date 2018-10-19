@@ -4,7 +4,12 @@ import android.os.Build
 import android.os.Bundle
 import android.support.v7.widget.RecyclerView
 import android.util.DisplayMetrics
-import android.view.*
+import android.view.Display
+import android.view.GestureDetector
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import eu.kanade.tachiyomi.source.model.Page
@@ -54,6 +59,18 @@ class WebtoonReader : BaseReader() {
         private set
 
     /**
+     * Whether to crop image borders.
+     */
+    var cropBorders: Boolean = false
+        private set
+
+    /**
+     * Duration of the double tap animation
+     */
+    var doubleTapAnimDuration = 500
+        private set
+
+    /**
      * Gesture detector for image touch events.
      */
     val imageGestureDetector by lazy { GestureDetector(context, ImageGestureListener()) }
@@ -67,7 +84,7 @@ class WebtoonReader : BaseReader() {
     private var scrollDistance: Int = 0
 
     val screenHeight by lazy {
-        val display = activity.windowManager.defaultDisplay
+        val display = activity!!.windowManager.defaultDisplay
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
             val metrics = DisplayMetrics()
@@ -85,7 +102,7 @@ class WebtoonReader : BaseReader() {
         val screenHeight = resources.displayMetrics.heightPixels
         scrollDistance = screenHeight * 3 / 4
 
-        layoutManager = PreCachingLayoutManager(activity)
+        layoutManager = PreCachingLayoutManager(activity!!)
         layoutManager.extraLayoutSpace = screenHeight / 2
 
         recycler = RecyclerView(activity).apply {
@@ -109,16 +126,28 @@ class WebtoonReader : BaseReader() {
                 .doOnNext { setDecoderClass(it) }
                 .skip(1)
                 .distinctUntilChanged()
-                .subscribe {
-                    val activePage = layoutManager.findFirstVisibleItemPosition()
-                    recycler.adapter = adapter
-                    setActivePage(activePage)
-                })
+                .subscribe { refreshAdapter() })
+
+        subscriptions.add(readerActivity.preferences.cropBordersWebtoon()
+                .asObservable()
+                .doOnNext { cropBorders = it }
+                .skip(1)
+                .distinctUntilChanged()
+                .subscribe { refreshAdapter() })
+
+        subscriptions.add(readerActivity.preferences.doubleTapAnimSpeed()
+                .asObservable()
+                .subscribe { doubleTapAnimDuration = it })
 
         setPagesOnAdapter()
         return recycler
     }
 
+    fun refreshAdapter() {
+        val activePage = layoutManager.findFirstVisibleItemPosition()
+        recycler.adapter = adapter
+        setActivePage(activePage)
+    }
 
     /**
      * Uses two ways to scroll to the last page read.

@@ -13,7 +13,7 @@ import eu.kanade.tachiyomi.data.preference.PreferencesHelper
 import eu.kanade.tachiyomi.data.preference.getOrDefault
 import eu.kanade.tachiyomi.util.plusAssign
 import eu.kanade.tachiyomi.widget.SimpleSeekBarListener
-import kotlinx.android.synthetic.main.dialog_reader_custom_filter.view.*
+import kotlinx.android.synthetic.main.reader_custom_filter_dialog.view.*
 import rx.Subscription
 import rx.android.schedulers.AndroidSchedulers
 import rx.subscriptions.CompositeSubscription
@@ -64,8 +64,8 @@ class ReaderCustomFilterDialog : DialogFragment() {
      * @param savedState The last saved instance state of the Fragment.
      */
     override fun onCreateDialog(savedState: Bundle?): Dialog {
-        val dialog = MaterialDialog.Builder(activity)
-                .customView(R.layout.dialog_reader_custom_filter, false)
+        val dialog = MaterialDialog.Builder(activity!!)
+                .customView(R.layout.reader_custom_filter_dialog, false)
                 .positiveText(android.R.string.ok)
                 .build()
 
@@ -106,12 +106,12 @@ class ReaderCustomFilterDialog : DialogFragment() {
 
         // Set listeners
         switch_color_filter.isChecked = preferences.colorFilter().getOrDefault()
-        switch_color_filter.setOnCheckedChangeListener { v, isChecked ->
+        switch_color_filter.setOnCheckedChangeListener { _, isChecked ->
             preferences.colorFilter().set(isChecked)
         }
 
         custom_brightness.isChecked = preferences.customBrightness().getOrDefault()
-        custom_brightness.setOnCheckedChangeListener { v, isChecked ->
+        custom_brightness.setOnCheckedChangeListener { _, isChecked ->
             preferences.customBrightness().set(isChecked)
         }
 

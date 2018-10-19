@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.data.backup
 
+import android.net.Uri
 import com.evernote.android.job.Job
 import com.evernote.android.job.JobManager
 import com.evernote.android.job.JobRequest
@@ -12,9 +13,10 @@ class BackupCreatorJob : Job() {
 
     override fun onRunJob(params: Params): Result {
         val preferences = Injekt.get<PreferencesHelper>()
-        val path = preferences.backupsDirectory().getOrDefault()
+        val backupManager = BackupManager(context)
+        val uri = Uri.parse(preferences.backupsDirectory().getOrDefault())
         val flags = BackupCreateService.BACKUP_ALL
-        BackupCreateService.makeBackup(context,path,flags,true)
+        backupManager.createBackup(uri, flags, true)
         return Result.SUCCESS
     }
 
@@ -27,7 +29,6 @@ class BackupCreatorJob : Job() {
             if (interval > 0) {
                 JobRequest.Builder(TAG)
                         .setPeriodic(interval * 60 * 60 * 1000L, 10 * 60 * 1000)
-                        .setPersisted(true)
                         .setUpdateCurrent(true)
                         .build()
                         .schedule()

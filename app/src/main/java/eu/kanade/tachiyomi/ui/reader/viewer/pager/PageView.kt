@@ -15,14 +15,16 @@ import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.reader.viewer.base.PageDecodeErrorLayout
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.horizontal.RightToLeftReader
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.vertical.VerticalReader
+import eu.kanade.tachiyomi.util.gone
 import eu.kanade.tachiyomi.util.inflate
-import kotlinx.android.synthetic.main.chapter_image.view.*
-import kotlinx.android.synthetic.main.item_pager_reader.view.*
+import eu.kanade.tachiyomi.util.visible
+import kotlinx.android.synthetic.main.reader_pager_item.view.*
 import rx.Observable
 import rx.Subscription
 import rx.android.schedulers.AndroidSchedulers
 import rx.subjects.PublishSubject
 import rx.subjects.SerializedSubject
+import java.net.URLConnection
 import java.util.concurrent.TimeUnit
 
 class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null)
@@ -60,9 +62,23 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
             rotation = -180f
         }
 
+        // --> EH
+        with(gif_view) {
+            setOnTouchListener { _, motionEvent -> reader.gestureDetector.onTouchEvent(motionEvent) }
+            setOnLongClickListener { reader.onLongClick(page) }
+            settings.loadWithOverviewMode = true
+            settings.useWideViewPort = true
+            settings.builtInZoomControls = true
+            settings.displayZoomControls = false
+            settings.setSupportZoom(true)
+            gone()
+        }
+        // <-- EH
+
         with(image_view) {
             setMaxTileSize((reader.activity as ReaderActivity).maxBitmapSize)
             setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_FIXED)
+            setDoubleTapZoomDuration(reader.doubleTapAnimDuration.toInt())
             setPanLimit(SubsamplingScaleImageView.PAN_LIMIT_INSIDE)
             setMinimumScaleType(reader.scaleType)
             setMinimumDpi(90)
@@ -71,7 +87,7 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
             setBitmapDecoderClass(reader.bitmapDecoderClass)
             setVerticalScrollingParent(reader is VerticalReader)
             setCropBorders(reader.cropBorders)
-            setOnTouchListener { v, motionEvent -> reader.gestureDetector.onTouchEvent(motionEvent) }
+            setOnTouchListener { _, motionEvent -> reader.gestureDetector.onTouchEvent(motionEvent) }
             setOnLongClickListener { reader.onLongClick(page) }
             setOnImageEventListener(object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
                 override fun onReady() {
@@ -82,9 +98,12 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
                     onImageDecodeError(reader)
                 }
             })
+            // --> EH
+            visible()
+            // <-- EH
         }
 
-        retry_button.setOnTouchListener { v, event ->
+        retry_button.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_UP) {
                 activity.presenter.retryPage(page)
             }
@@ -100,6 +119,9 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         unsubscribeStatus()
         image_view.setOnTouchListener(null)
         image_view.setOnImageEventListener(null)
+        // --> EH
+        gif_view.setOnTouchListener(null)
+        // <-- EH
         super.onDetachedFromWindow()
     }
 
@@ -131,7 +153,11 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
                 .onBackpressureLatest()
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe { progress ->
-                    progress_text.text = context.getString(R.string.download_progress, progress)
+                    progress_text.text = if (progress > 0) {
+                        context.getString(R.string.download_progress, progress)
+                    } else {
+                        context.getString(R.string.downloading)
+                    }
                 }
     }
 
@@ -183,6 +209,9 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         progress_container.visibility = View.VISIBLE
         progress_text.visibility = View.INVISIBLE
         retry_button.visibility = View.GONE
+        // --> EH
+        gif_view.gone()
+        // <-- EH
         decodeErrorLayout?.let {
             removeView(it)
             decodeErrorLayout = null
@@ -196,6 +225,9 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         progress_container.visibility = View.VISIBLE
         progress_text.visibility = View.VISIBLE
         progress_text.setText(R.string.downloading)
+        // --> EH
+        gif_view.gone()
+        // <-- EH
     }
 
     /**
@@ -204,6 +236,9 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private fun setDownloading() {
         progress_container.visibility = View.VISIBLE
         progress_text.visibility = View.VISIBLE
+        // --> EH
+        gif_view.gone()
+        // <-- EH
     }
 
     /**
@@ -222,8 +257,26 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
             return
         }
 
+        // --> EH
+        val guessedType = file.openInputStream().buffered().use {
+            URLConnection.guessContentTypeFromStream(it)
+        }
+        // <-- EH
+
         progress_text.visibility = View.INVISIBLE
-        image_view.setImage(ImageSource.uri(file.uri))
+        // --> EH
+        if(guessedType == "image/gif") {
+            gif_view.loadUrl(uri.toString())
+            gif_view.visible()
+            progress_container.gone()
+            image_view.gone()
+        } else {
+            // <-- EH
+            image_view.setImage(ImageSource.uri(file.uri))
+            // --> EH
+            gif_view.gone()
+        }
+        // <-- EH
     }
 
     /**
@@ -232,6 +285,9 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private fun setError() {
         progress_container.visibility = View.GONE
         retry_button.visibility = View.VISIBLE
+        // --> EH
+        gif_view.gone()
+        // <-- EH
     }
 
     /**
@@ -259,7 +315,7 @@ class PageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
 
         val activity = reader.activity as ReaderActivity
 
-        val layout = inflate(R.layout.page_decode_error)
+        val layout = inflate(R.layout.reader_page_decode_error)
         PageDecodeErrorLayout(layout, page, activity.readerTheme, {
             if (reader.isAdded) {
                 activity.presenter.retryPage(page)

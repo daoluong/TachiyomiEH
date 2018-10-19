@@ -11,7 +11,7 @@ object ChapterRecognition {
      * All cases with Ch.xx
      * Mokushiroku Alice Vol.1 Ch. 4: Misrepresentation -R> 4
      */
-    private val basic = Regex("""(?<=ch\.)([0-9]+)(\.[0-9]+)?(\.?[a-z]+)?""")
+    private val basic = Regex("""(?<=ch\.) *([0-9]+)(\.[0-9]+)?(\.?[a-z]+)?""")
 
     /**
      * Regex used when only one number occurrence
@@ -29,7 +29,7 @@ object ChapterRecognition {
      * Regex used to remove unwanted tags
      * Example Prison School 12 v.1 vol004 version1243 volume64 -R> Prison School 12
      */
-    private val unwanted = Regex("""(?:(v|ver|vol|version|volume|season|s).?[0-9]+)""")
+    private val unwanted = Regex("""(?<![a-z])(v|ver|vol|version|volume|season|s).?[0-9]+""")
 
     /**
      * Regex used to remove unwanted whitespace

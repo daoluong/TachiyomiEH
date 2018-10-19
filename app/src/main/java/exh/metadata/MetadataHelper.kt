@@ -1,62 +1,52 @@
 package exh.metadata
 
+import eu.kanade.tachiyomi.data.database.models.Manga
+import eu.kanade.tachiyomi.source.SourceManager
+import eu.kanade.tachiyomi.source.online.LewdSource
+import eu.kanade.tachiyomi.ui.library.LibraryItem
 import exh.*
-import exh.metadata.models.ExGalleryMetadata
-import exh.metadata.models.NHentaiMetadata
-import exh.metadata.models.PervEdenGalleryMetadata
-import exh.metadata.models.SearchableGalleryMetadata
-import io.paperdb.Paper
+import exh.metadata.models.*
+import io.realm.Realm
+import io.realm.RealmQuery
+import io.realm.RealmResults
+import timber.log.Timber
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+import kotlin.reflect.KClass
 
-class MetadataHelper {
+fun Realm.loadAllMetadata(): Map<KClass<out SearchableGalleryMetadata>, RealmResults<out SearchableGalleryMetadata>> =
+        Injekt.get<SourceManager>().getOnlineSources().filterIsInstance<LewdSource<*, *>>().map {
+            it.queryAll()
+        }.associate {
+            it.clazz to it.query(this@loadAllMetadata).sort(SearchableGalleryMetadata::mangaId.name).findAll()
+        }.toMap()
 
-    fun writeGallery(galleryMetadata: SearchableGalleryMetadata, source: Long)
-            = (if(isExSource(source) || isEhSource(source)) exGalleryBook()
-    else if(isPervEdenSource(source)) pervEdenGalleryBook()
-        else if(isNhentaiSource(source)) nhentaiGalleryBook()
-    else null)?.write(galleryMetadata.galleryUniqueIdentifier(), galleryMetadata)!!
+fun Realm.queryMetadataFromManga(manga: Manga,
+                                 meta: RealmQuery<SearchableGalleryMetadata>? = null):
+        RealmQuery<out SearchableGalleryMetadata> =
+        Injekt.get<SourceManager>().get(manga.source)?.let {
+            (it as LewdSource<*, *>).queryFromUrl(manga.url) as GalleryQuery<SearchableGalleryMetadata>
+        }?.query(this, meta) ?: throw IllegalArgumentException("Unknown source type!")
 
-    fun fetchEhMetadata(url: String, exh: Boolean): ExGalleryMetadata?
-            = ExGalleryMetadata().let {
-        it.url = url
-        it.exh = exh
-        return exGalleryBook().read<ExGalleryMetadata>(it.galleryUniqueIdentifier())
-    }
-
-    fun fetchPervEdenMetadata(url: String, source: Long): PervEdenGalleryMetadata?
-            = PervEdenGalleryMetadata().let {
-        it.url = url
-        if(source == PERV_EDEN_EN_SOURCE_ID)
-            it.lang = "en"
-        else if(source == PERV_EDEN_IT_SOURCE_ID)
-            it.lang = "it"
-        else throw IllegalArgumentException("Invalid source id!")
-        return pervEdenGalleryBook().read<PervEdenGalleryMetadata>(it.galleryUniqueIdentifier())
-    }
-
-    fun fetchNhentaiMetadata(url: String) = NHentaiMetadata().let {
-        it.url = url
-        nhentaiGalleryBook().read<NHentaiMetadata>(it.galleryUniqueIdentifier())
-    }
-
-    fun fetchMetadata(url: String, source: Long): SearchableGalleryMetadata? {
-        if(isExSource(source) || isEhSource(source)) {
-            return fetchEhMetadata(url, isExSource(source))
-        } else if(isPervEdenSource(source)) {
-            return fetchPervEdenMetadata(url, source)
-        } else if(isNhentaiSource(source)) {
-            return fetchNhentaiMetadata(url)
-        } else {
-            return null
+fun Realm.syncMangaIds(mangas: List<LibraryItem>) {
+    Timber.d("--> EH: Begin syncing ${mangas.size} manga IDs...")
+    executeTransaction {
+        mangas.forEach { manga ->
+            if(isLewdSource(manga.manga.source)) {
+                try {
+                    manga.hasMetadata =
+                            queryMetadataFromManga(manga.manga).findFirst()?.let { meta ->
+                                meta.mangaId = manga.manga.id
+                                true
+                            } ?: false
+                } catch (e: Exception) {
+                    Timber.w(e, "Error syncing manga IDs! Ignoring...")
+                }
+            }
         }
     }
-
-    fun getAllGalleries() = exGalleryBook().allKeys.map {
-        exGalleryBook().read<ExGalleryMetadata>(it)
-    }
-
-    fun exGalleryBook() = Paper.book("gallery-ex")!!
-
-    fun pervEdenGalleryBook() = Paper.book("gallery-perveden")!!
-
-    fun nhentaiGalleryBook() = Paper.book("gallery-nhentai")!!
+    Timber.d("--> EH: Finish syncing ${mangas.size} manga IDs!")
 }
+
+val Manga.metadataClass
+    get() = (Injekt.get<SourceManager>().get(source) as? LewdSource<*, *>)?.queryAll()?.clazz

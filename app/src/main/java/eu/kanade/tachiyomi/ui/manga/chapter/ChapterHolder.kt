@@ -2,59 +2,70 @@ package eu.kanade.tachiyomi.ui.manga.chapter
 
 import android.view.View
 import android.widget.PopupMenu
-import eu.davidea.viewholders.FlexibleViewHolder
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.download.model.Download
+import eu.kanade.tachiyomi.data.preference.PreferencesHelper
+import eu.kanade.tachiyomi.data.preference.getOrDefault
+import eu.kanade.tachiyomi.ui.base.holder.BaseFlexibleViewHolder
 import eu.kanade.tachiyomi.util.getResourceColor
-import kotlinx.android.synthetic.main.item_chapter.view.*
-import java.text.DateFormat
-import java.text.DecimalFormat
-import java.text.DecimalFormatSymbols
+import eu.kanade.tachiyomi.util.gone
+import eu.kanade.tachiyomi.util.setVectorCompat
+import kotlinx.android.synthetic.main.chapters_item.*
+import uy.kohesive.injekt.injectLazy
 import java.util.*
 
 class ChapterHolder(
         private val view: View,
-        private val adapter: ChaptersAdapter)
-: FlexibleViewHolder(view, adapter) {
-
-    private val readColor = view.context.getResourceColor(android.R.attr.textColorHint)
-    private val unreadColor = view.context.getResourceColor(android.R.attr.textColorPrimary)
-    private val bookmarkedColor = view.context.getResourceColor(R.attr.colorAccent)
-    private val decimalFormat = DecimalFormat("#.###", DecimalFormatSymbols().apply { decimalSeparator = '.' })
-    private val df = DateFormat.getDateInstance(DateFormat.SHORT)
+        private val adapter: ChaptersAdapter
+) : BaseFlexibleViewHolder(view, adapter) {
+    private val prefs: PreferencesHelper by injectLazy()
 
     init {
         // We need to post a Runnable to show the popup to make sure that the PopupMenu is
         // correctly positioned. The reason being that the view may change position before the
         // PopupMenu is shown.
-        view.chapter_menu.setOnClickListener { it.post { showPopupMenu(it) } }
+        chapter_menu.setOnClickListener { it.post { showPopupMenu(it) } }
     }
 
-    fun bind(item: ChapterItem, manga: Manga) = with(view) {
+    fun bind(item: ChapterItem, manga: Manga) {
         val chapter = item.chapter
 
         chapter_title.text = when (manga.displayMode) {
             Manga.DISPLAY_NUMBER -> {
-                val formattedNumber = decimalFormat.format(chapter.chapter_number.toDouble())
-                context.getString(R.string.display_mode_chapter, formattedNumber)
+                val number = adapter.decimalFormat.format(chapter.chapter_number.toDouble())
+                itemView.context.getString(R.string.display_mode_chapter, number)
             }
             else -> chapter.name
         }
 
+        // Set the correct drawable for dropdown and update the tint to match theme.
+        chapter_menu.setVectorCompat(R.drawable.ic_more_vert_black_24dp, view.context.getResourceColor(R.attr.icon_color))
+
         // Set correct text color
-        chapter_title.setTextColor(if (chapter.read) readColor else unreadColor)
-        if (chapter.bookmark) chapter_title.setTextColor(bookmarkedColor)
+        chapter_title.setTextColor(if (chapter.read) adapter.readColor else adapter.unreadColor)
+        if (chapter.bookmark) chapter_title.setTextColor(adapter.bookmarkedColor)
 
         if (chapter.date_upload > 0) {
-            chapter_date.text = df.format(Date(chapter.date_upload))
-            chapter_date.setTextColor(if (chapter.read) readColor else unreadColor)
+            chapter_date.text = adapter.dateFormat.format(Date(chapter.date_upload))
+            chapter_date.setTextColor(if (chapter.read) adapter.readColor else adapter.unreadColor)
         } else {
             chapter_date.text = ""
         }
 
-        chapter_pages.text = if (!chapter.read && chapter.last_page_read > 0) {
-            context.getString(R.string.chapter_progress, chapter.last_page_read + 1)
+        //add scanlator if exists
+        chapter_scanlator.text = chapter.scanlator
+        //allow longer titles if there is no scanlator (most sources)
+        if (chapter_scanlator.text.isNullOrBlank()) {
+            chapter_title.maxLines = 2
+            chapter_scanlator.gone()
+        } else {
+            chapter_title.maxLines = 1
+        }
+
+        chapter_pages.text = if ((!chapter.read /* --> EH */ || prefs.eh_preserveReadingPosition()
+                        .getOrDefault()) /* <-- EH */ && chapter.last_page_read > 0) {
+            itemView.context.getString(R.string.chapter_progress, chapter.last_page_read + 1)
         } else {
             ""
         }
@@ -62,7 +73,7 @@ class ChapterHolder(
         notifyStatus(item.status)
     }
 
-    fun notifyStatus(status: Int) = with(view.download_text) {
+    fun notifyStatus(status: Int) = with(download_text) {
         when (status) {
             Download.QUEUE -> setText(R.string.chapter_queued)
             Download.DOWNLOADING -> setText(R.string.chapter_downloading)
@@ -94,7 +105,8 @@ class ChapterHolder(
         popup.menu.findItem(R.id.action_remove_bookmark).isVisible = chapter.bookmark
 
         // Hide mark as unread when the chapter is unread
-        if (!chapter.read && chapter.last_page_read == 0) {
+        if (!chapter.read && (chapter.last_page_read == 0 /* --> EH */ || prefs.eh_preserveReadingPosition()
+                        .getOrDefault()) /* <-- EH */) {
             popup.menu.findItem(R.id.action_mark_as_unread).isVisible = false
         }
 
@@ -105,7 +117,7 @@ class ChapterHolder(
 
         // Set a listener so we are notified if a menu item is clicked
         popup.setOnMenuItemClickListener { menuItem ->
-            adapter.menuItemListener(adapterPosition, menuItem)
+            adapter.menuItemListener.onMenuItemClick(adapterPosition, menuItem)
             true
         }
 

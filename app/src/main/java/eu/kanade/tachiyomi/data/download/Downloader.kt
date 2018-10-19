@@ -9,18 +9,16 @@ import eu.kanade.tachiyomi.data.database.models.Chapter
 import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.data.download.model.DownloadQueue
-import eu.kanade.tachiyomi.data.preference.PreferencesHelper
-import eu.kanade.tachiyomi.data.preference.getOrDefault
 import eu.kanade.tachiyomi.source.SourceManager
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.source.online.fetchAllImageUrlsFromPageList
 import eu.kanade.tachiyomi.util.*
+import kotlinx.coroutines.experimental.async
 import okhttp3.Response
 import rx.Observable
 import rx.android.schedulers.AndroidSchedulers
 import rx.schedulers.Schedulers
-import rx.subjects.BehaviorSubject
 import rx.subscriptions.CompositeSubscription
 import timber.log.Timber
 import uy.kohesive.injekt.injectLazy
@@ -36,8 +34,13 @@ import uy.kohesive.injekt.injectLazy
  *
  * @param context the application context.
  * @param provider the downloads directory provider.
+ * @param cache the downloads cache, used to add the downloads to the cache after their completion.
  */
-class Downloader(private val context: Context, private val provider: DownloadProvider) {
+class Downloader(
+        private val context: Context,
+        private val provider: DownloadProvider,
+        private val cache: DownloadCache
+) {
 
     /**
      * Store for persisting downloads across restarts.
@@ -55,11 +58,6 @@ class Downloader(private val context: Context, private val provider: DownloadPro
     private val sourceManager: SourceManager by injectLazy()
 
     /**
-     * Preferences.
-     */
-    private val preferences: PreferencesHelper by injectLazy()
-
-    /**
      * Notifier for the downloader state and progress.
      */
     private val notifier by lazy { DownloadNotifier(context) }
@@ -68,11 +66,6 @@ class Downloader(private val context: Context, private val provider: DownloadPro
      * Downloader subscriptions.
      */
     private val subscriptions = CompositeSubscription()
-
-    /**
-     * Subject to do a live update of the number of simultaneous downloads.
-     */
-    private val threadsSubject = BehaviorSubject.create<Int>()
 
     /**
      * Relay to send a list of downloads to the downloader.
@@ -90,12 +83,10 @@ class Downloader(private val context: Context, private val provider: DownloadPro
     @Volatile private var isRunning: Boolean = false
 
     init {
-        Observable.fromCallable { store.restore() }
-                .map { downloads -> downloads.filter { isDownloadAllowed(it) } }
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe({ downloads -> queue.addAll(downloads)
-                }, { error -> Timber.e(error) })
+        launchNow {
+            val chapters = async { store.restore() }
+            queue.addAll(chapters.await())
+        }
     }
 
     /**
@@ -180,14 +171,8 @@ class Downloader(private val context: Context, private val provider: DownloadPro
 
         subscriptions.clear()
 
-        subscriptions += preferences.downloadThreads().asObservable()
-                .subscribe {
-                    threadsSubject.onNext(it)
-                    notifier.multipleDownloadThreads = it > 1
-                }
-
-        subscriptions += downloadsRelay.flatMap { Observable.from(it) }
-                .lift(DynamicConcurrentMergeOperator<Download, Download>({ downloadChapter(it) }, threadsSubject))
+        subscriptions += downloadsRelay.concatMapIterable { it }
+                .concatMap { downloadChapter(it).subscribeOn(Schedulers.io()) }
                 .onBackpressureBuffer()
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe({ completeDownload(it)
@@ -210,61 +195,51 @@ class Downloader(private val context: Context, private val provider: DownloadPro
     }
 
     /**
-     * Creates a download object for every chapter and adds them to the downloads queue. This method
-     * must be called in the main thread.
+     * Creates a download object for every chapter and adds them to the downloads queue.
      *
      * @param manga the manga of the chapters to download.
      * @param chapters the list of chapters to download.
+     * @param autoStart whether to start the downloader after enqueing the chapters.
      */
-    fun queueChapters(manga: Manga, chapters: List<Chapter>) {
-        val source = sourceManager.get(manga.source) as? HttpSource ?: return
+    fun queueChapters(manga: Manga, chapters: List<Chapter>, autoStart: Boolean) = launchUI {
+        val source = sourceManager.get(manga.source) as? HttpSource ?: return@launchUI
 
-        val chaptersToQueue = chapters
-                // Avoid downloading chapters with the same name.
-                .distinctBy { it.name }
-                // Add chapters to queue from the start.
-                .sortedByDescending { it.source_order }
-                // Create a downloader for each one.
-                .map { Download(source, manga, it) }
-                // Filter out those already queued or downloaded.
-                .filter { isDownloadAllowed(it) }
+        // Called in background thread, the operation can be slow with SAF.
+        val chaptersWithoutDir = async {
+            val mangaDir = provider.findMangaDir(manga, source)
 
-        // Return if there's nothing to queue.
-        if (chaptersToQueue.isEmpty())
-            return
-
-        queue.addAll(chaptersToQueue)
-
-        // Initialize queue size.
-        notifier.initialQueueSize = queue.size
-
-        // Initial multi-thread
-        notifier.multipleDownloadThreads = preferences.downloadThreads().getOrDefault() > 1
-
-        if (isRunning) {
-            // Send the list of downloads to the downloader.
-            downloadsRelay.call(chaptersToQueue)
-        } else {
-            // Show initial notification.
-            notifier.onProgressChange(queue)
+            chapters
+                    // Avoid downloading chapters with the same name.
+                    .distinctBy { it.name }
+                    // Filter out those already downloaded.
+                    .filter { mangaDir?.findFile(provider.getChapterDirName(it)) == null }
+                    // Add chapters to queue from the start.
+                    .sortedByDescending { it.source_order }
         }
-    }
 
-    /**
-     * Returns true if the given download can be queued and downloaded.
-     *
-     * @param download the download to be checked.
-     */
-    private fun isDownloadAllowed(download: Download): Boolean {
-        // If the chapter is already queued, don't add it again
-        if (queue.any { it.chapter.id == download.chapter.id })
-            return false
+        // Runs in main thread (synchronization needed).
+        val chaptersToQueue = chaptersWithoutDir.await()
+                // Filter out those already enqueued.
+                .filter { chapter -> queue.none { it.chapter.id == chapter.id } }
+                // Create a download for each one.
+                .map { Download(source, manga, it) }
 
-        val dir = provider.findChapterDir(download.source, download.manga, download.chapter)
-        if (dir != null && dir.exists())
-            return false
+        if (chaptersToQueue.isNotEmpty()) {
+            queue.addAll(chaptersToQueue)
 
-        return true
+            // Initialize queue size.
+            notifier.initialQueueSize = queue.size
+
+            if (isRunning) {
+                // Send the list of downloads to the downloader.
+                downloadsRelay.call(chaptersToQueue)
+            }
+
+            // Start downloader if needed
+            if (autoStart) {
+                DownloadService.start(this@Downloader.context)
+            }
+        }
     }
 
     /**
@@ -272,9 +247,9 @@ class Downloader(private val context: Context, private val provider: DownloadPro
      *
      * @param download the chapter to be downloaded.
      */
-    private fun downloadChapter(download: Download): Observable<Download> {
+    private fun downloadChapter(download: Download): Observable<Download> = Observable.defer {
         val chapterDirname = provider.getChapterDirName(download.chapter)
-        val mangaDir = provider.getMangaDir(download.source, download.manga)
+        val mangaDir = provider.getMangaDir(download.manga, download.source)
         val tmpDir = mangaDir.createDirectory("${chapterDirname}_tmp")
 
         val pageListObservable = if (download.pages == null) {
@@ -291,8 +266,8 @@ class Downloader(private val context: Context, private val provider: DownloadPro
             Observable.just(download.pages!!)
         }
 
-        return pageListObservable
-                .doOnNext { pages ->
+        pageListObservable
+                .doOnNext { _ ->
                     // Delete all temporary (unfinished) files
                     tmpDir.listFiles()
                             ?.filter { it.name!!.endsWith(".tmp") }
@@ -306,18 +281,18 @@ class Downloader(private val context: Context, private val provider: DownloadPro
                 // Start downloading images, consider we can have downloaded images already
                 .concatMap { page -> getOrDownloadImage(page, download, tmpDir) }
                 // Do when page is downloaded.
-                .doOnNext { notifier.onProgressChange(download, queue) }
+                .doOnNext { notifier.onProgressChange(download) }
                 .toList()
-                .map { pages -> download }
+                .map { _ -> download }
                 // Do after download completes
-                .doOnNext { ensureSuccessfulDownload(download, tmpDir, chapterDirname) }
+                .doOnNext { ensureSuccessfulDownload(download, mangaDir, tmpDir, chapterDirname) }
                 // If the page list threw, it will resume here
                 .onErrorReturn { error ->
                     download.status = Download.ERROR
                     notifier.onError(error.message, download.chapter.name)
                     download
                 }
-                .subscribeOn(Schedulers.io())
+
     }
 
     /**
@@ -380,7 +355,7 @@ class Downloader(private val context: Context, private val provider: DownloadPro
                 .map { response ->
                     val file = tmpDir.createFile("$filename.tmp")
                     try {
-                        response.body().source().saveTo(file.openOutputStream())
+                        response.body()!!.source().saveTo(file.openOutputStream())
                         val extension = getImageExtension(response, file)
                         file.renameTo("$filename.$extension")
                     } catch (e: Exception) {
@@ -403,7 +378,7 @@ class Downloader(private val context: Context, private val provider: DownloadPro
      */
     private fun getImageExtension(response: Response, file: UniFile): String {
         // Read content type if available.
-        val mime = response.body().contentType()?.let { ct -> "${ct.type()}/${ct.subtype()}" }
+        val mime = response.body()?.contentType()?.let { ct -> "${ct.type()}/${ct.subtype()}" }
             // Else guess from the uri.
             ?: context.contentResolver.getType(file.uri)
             // Else read magic numbers.
@@ -416,10 +391,13 @@ class Downloader(private val context: Context, private val provider: DownloadPro
      * Checks if the download was successful.
      *
      * @param download the download to check.
+     * @param mangaDir the manga directory of the download.
      * @param tmpDir the directory where the download is currently stored.
      * @param dirname the real (non temporary) directory name of the download.
      */
-    private fun ensureSuccessfulDownload(download: Download, tmpDir: UniFile, dirname: String) {
+    private fun ensureSuccessfulDownload(download: Download, mangaDir: UniFile,
+                                         tmpDir: UniFile, dirname: String) {
+
         // Ensure that the chapter folder has all the images.
         val downloadedImages = tmpDir.listFiles().orEmpty().filterNot { it.name!!.endsWith(".tmp") }
 
@@ -432,6 +410,7 @@ class Downloader(private val context: Context, private val provider: DownloadPro
         // Only rename the directory if it's downloaded.
         if (download.status == Download.DOWNLOADED) {
             tmpDir.renameTo(dirname)
+            cache.addChapter(dirname, mangaDir, download.manga)
         }
     }
 
@@ -443,7 +422,6 @@ class Downloader(private val context: Context, private val provider: DownloadPro
         if (download.status == Download.DOWNLOADED) {
             // remove downloaded chapter from queue
             queue.remove(download)
-            notifier.onProgressChange(queue)
         }
         if (areAllDownloadsFinished()) {
             if (notifier.isSingleChapter && !notifier.errorThrown) {

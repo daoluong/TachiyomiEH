@@ -86,6 +86,12 @@ abstract class PagerReader : BaseReader() {
         private set
 
     /**
+     * Duration of the double tap animation
+     */
+    var doubleTapAnimDuration = 500
+        private set
+
+    /**
      * Scale type (fit width, fit screen, etc).
      */
     var scaleType = 1
@@ -100,12 +106,12 @@ abstract class PagerReader : BaseReader() {
     /**
      * Text color for black theme.
      */
-    val whiteColor by lazy { ContextCompat.getColor(context, R.color.textColorSecondaryDark) }
+    val whiteColor by lazy { ContextCompat.getColor(context!!, R.color.textColorSecondaryDark) }
 
     /**
      * Text color for white theme.
      */
-    val blackColor by lazy { ContextCompat.getColor(context, R.color.textColorSecondaryLight) }
+    val blackColor by lazy { ContextCompat.getColor(context!!, R.color.textColorSecondaryLight) }
 
     /**
      * Initializes the pager.
@@ -118,7 +124,7 @@ abstract class PagerReader : BaseReader() {
         this.pager = pager.apply {
             setLayoutParams(ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             setOffscreenPageLimit(1)
-            setId(R.id.view_pager)
+            setId(R.id.reader_pager)
             setOnChapterBoundariesOutListener(object : OnChapterBoundariesOutListener {
                 override fun onFirstPageOutEvent() {
                     readerActivity.requestPreviousChapter()
@@ -166,6 +172,10 @@ abstract class PagerReader : BaseReader() {
                     .skip(1)
                     .distinctUntilChanged()
                     .subscribe { refreshAdapter() })
+
+            add(preferences.doubleTapAnimSpeed()
+                    .asObservable()
+                    .subscribe { doubleTapAnimDuration = it })
         }
 
         setPagesOnAdapter()

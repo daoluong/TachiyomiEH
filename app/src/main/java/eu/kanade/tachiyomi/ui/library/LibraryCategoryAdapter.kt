@@ -1,147 +1,53 @@
 package eu.kanade.tachiyomi.ui.library
 
-import android.os.Handler
-import android.os.Looper
-import android.view.Gravity
-import android.view.ViewGroup
-import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.widget.FrameLayout
-import eu.davidea.flexibleadapter4.FlexibleAdapter
-import eu.kanade.tachiyomi.R
+import eu.davidea.flexibleadapter.FlexibleAdapter
 import eu.kanade.tachiyomi.data.database.models.Manga
-import eu.kanade.tachiyomi.source.SourceManager
-import eu.kanade.tachiyomi.source.online.all.EHentai
-import eu.kanade.tachiyomi.source.online.all.EHentaiMetadata
-import eu.kanade.tachiyomi.util.inflate
-import eu.kanade.tachiyomi.widget.AutofitRecyclerView
-import exh.isLewdSource
-import exh.metadata.MetadataHelper
+import exh.*
+import exh.metadata.metadataClass
+import exh.metadata.models.SearchableGalleryMetadata
+import exh.metadata.syncMangaIds
 import exh.search.SearchEngine
-import kotlinx.android.synthetic.main.item_catalogue_grid.view.*
-import uy.kohesive.injekt.injectLazy
-import java.util.*
+import exh.util.defRealm
+import io.realm.RealmResults
+import timber.log.Timber
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.thread
 
 /**
  * Adapter storing a list of manga in a certain category.
  *
- * @param fragment the fragment containing this adapter.
+ * @param view the fragment containing this adapter.
  */
-class LibraryCategoryAdapter(val fragment: LibraryCategoryView) :
-        FlexibleAdapter<LibraryHolder, Manga>() {
+class LibraryCategoryAdapter(val view: LibraryCategoryView) :
+        FlexibleAdapter<LibraryItem>(null, view, true) {
+    // --> EH
+    private val searchEngine = SearchEngine()
+    // <-- EH
 
     /**
      * The list of manga in this category.
      */
-    private var mangas: List<Manga> = emptyList()
-
-    private val sourceManager: SourceManager by injectLazy()
-
-    private val searchEngine = SearchEngine()
-    private val metadataHelper = MetadataHelper()
-
-    var asyncSearchText: String? = null
-
-    init {
-        setHasStableIds(true)
-    }
+    private var mangas: List<LibraryItem> = emptyList()
 
     /**
      * Sets a list of manga in the adapter.
      *
      * @param list the list to set.
      */
-    fun setItems(list: List<Manga>) {
-        mItems = list
-
+    fun setItems(list: List<LibraryItem>) {
         // A copy of manga always unfiltered.
-        mangas = ArrayList(list)
-        updateDataSet(null)
-    }
+        mangas = list.toList()
 
-    /**
-     * Returns the identifier for a manga.
-     *
-     * @param position the position in the adapter.
-     * @return an identifier for the item.
-     */
-    override fun getItemId(position: Int): Long {
-        return mItems[position].id!!
-    }
-
-    /**
-     * Filters the list of manga applying [filterObject] for each element.
-     *
-     * @param param the filter. Not used.
-     */
-    override fun updateDataSet(param: String?) {
-        //Async search filter (EH)
-        val filtered = asyncSearchText?.let { search ->
-            mangas.filter {
-                filterObject(it, search)
+        // Sync manga IDs in background (EH)
+        thread {
+            //Wait 1s to reduce UI stutter during animations
+            Thread.sleep(2000)
+            defRealm {
+                it.syncMangaIds(mangas)
             }
-        } ?: mangas
-        //The rest of the filters run on the main loop
-        Handler(Looper.getMainLooper()).post {
-            filterItems(filtered)
-            notifyDataSetChanged()
         }
-    }
 
-    /**
-     * Filters a manga depending on a query.
-     *
-     * @param manga the manga to filter.
-     * @param query the query to apply.
-     * @return true if the manga should be included, false otherwise.
-     */
-    override fun filterObject(manga: Manga, query: String): Boolean = with(manga) {
-        if(!isLewdSource(manga.source)) {
-            //Regular searching for normal manga
-            title.toLowerCase().contains(query) ||
-                    author != null && author!!.toLowerCase().contains(query)
-        } else {
-            //Use gallery search engine for EH manga
-            val metadata = metadataHelper.fetchMetadata(manga.url, manga.source)
-            metadata?.let {
-                searchEngine.matches(it, searchEngine.parseQuery(query))
-            } ?: title.contains(query, ignoreCase = true) //Use regular searching when the metadata is not set up for this gallery
-        }
-    }
-
-    /**
-     * Creates a new view holder.
-     *
-     * @param parent the parent view.
-     * @param viewType the type of the holder.
-     * @return a new view holder for a manga.
-     */
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): LibraryHolder {
-        // Depending on preferences, display a list or display a grid
-        if (parent is AutofitRecyclerView) {
-            val view = parent.inflate(R.layout.item_catalogue_grid).apply {
-                val coverHeight = parent.itemWidth / 3 * 4
-                card.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, coverHeight)
-                gradient.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, coverHeight / 2, Gravity.BOTTOM)
-            }
-            return LibraryGridHolder(view, this, fragment)
-        } else {
-            val view = parent.inflate(R.layout.item_catalogue_list)
-            return LibraryListHolder(view, this, fragment)
-        }
-    }
-
-    /**
-     * Binds a holder with a new position.
-     *
-     * @param holder the holder to bind.
-     * @param position the position to bind.
-     */
-    override fun onBindViewHolder(holder: LibraryHolder, position: Int) {
-        val manga = getItem(position)
-
-        holder.onSetValues(manga)
-        // When user scrolls this bind the correct selection status
-        holder.itemView.isActivated = isSelected(position)
+        performFilter()
     }
 
     /**
@@ -150,7 +56,109 @@ class LibraryCategoryAdapter(val fragment: LibraryCategoryView) :
      * @param manga the manga to find.
      */
     fun indexOf(manga: Manga): Int {
-        return mangas.orEmpty().indexOfFirst { it.id == manga.id }
+        return currentItems.indexOfFirst { it.manga.id == manga.id }
     }
 
+    fun performFilter() {
+        if(searchText.isNotBlank()) {
+            if(cacheText != searchText) {
+                globalSearchCache.clear()
+                cacheText = searchText
+            }
+
+            try {
+                val thisCache = globalSearchCache.getOrPut(view.category.name) {
+                    SearchCache(mangas.size)
+                }
+
+                if(thisCache.ready) {
+                    //Skip everything if cache matches our query exactly
+                    updateDataSet(mangas.filter {
+                        thisCache.cache[it.manga.id] ?: false
+                    })
+                } else {
+                    thisCache.cache.clear()
+
+                    val parsedQuery = searchEngine.parseQuery(searchText)
+                    var totalFilteredSize = 0
+
+                    val metadata = view.controller.meta!!.map {
+                        val meta: RealmResults<out SearchableGalleryMetadata> = if (it.value.isNotEmpty())
+                            searchEngine.filterResults(it.value.where(),
+                                    parsedQuery,
+                                    it.value.first()!!.titleFields)
+                                    .sort(SearchableGalleryMetadata::mangaId.name)
+                                    .findAll().apply {
+                                totalFilteredSize += size
+                            }
+                        else
+                            it.value
+                        Pair(it.key, meta)
+                    }.toMap()
+
+                    val out = ArrayList<LibraryItem>(mangas.size)
+
+                    var lewdMatches = 0
+
+                    for(manga in mangas) {
+                        // --> EH
+                        try {
+                            if (isLewdSource(manga.manga.source)) {
+                                //Stop matching lewd manga if we have matched them all already!
+                                if (lewdMatches >= totalFilteredSize)
+                                    continue
+
+                                val metaClass = manga.manga.metadataClass
+                                val unfilteredMeta = view.controller.meta!![metaClass]
+                                val filteredMeta = metadata[metaClass]
+
+                                val hasMeta = manga.hasMetadata ?: (unfilteredMeta
+                                        ?.where()
+                                        ?.equalTo(SearchableGalleryMetadata::mangaId.name, manga.manga.id)
+                                        ?.count() ?: 0 > 0)
+
+                                if (hasMeta) {
+                                    if (filteredMeta!!.where()
+                                            .equalTo(SearchableGalleryMetadata::mangaId.name, manga.manga.id)
+                                            .count() > 0) {
+                                        //Metadata match!
+                                        lewdMatches++
+                                        thisCache.cache[manga.manga.id!!] = true
+                                        out += manga
+                                        continue
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Timber.w(e, "Could not filter manga! %s", manga.manga)
+                        }
+
+                        //Fallback to regular filter
+                        val filterRes = manga.filter(searchText)
+                        thisCache.cache[manga.manga.id!!] = filterRes
+                        if(filterRes) out += manga
+                        // <-- EH
+                    }
+                    thisCache.ready = true
+                    updateDataSet(out)
+                }
+            } catch(e: Exception) {
+                Timber.w(e, "Could not filter mangas!")
+                updateDataSet(mangas)
+            }
+        } else {
+            globalSearchCache.clear()
+            updateDataSet(mangas)
+        }
+    }
+
+    class SearchCache(size: Int) {
+        var ready = false
+        var cache = HashMap<Long, Boolean>(size)
+    }
+
+    companion object {
+        var cacheText: String? = null
+        val globalSearchCache = ConcurrentHashMap<String, SearchCache>()
+    }
 }

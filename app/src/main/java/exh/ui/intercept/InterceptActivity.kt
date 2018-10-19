@@ -5,58 +5,36 @@ import android.os.Bundle
 import android.view.MenuItem
 import com.afollestad.materialdialogs.MaterialDialog
 import eu.kanade.tachiyomi.R
-import eu.kanade.tachiyomi.ui.base.activity.BaseActivity
-import eu.kanade.tachiyomi.ui.manga.MangaActivity
-import exh.GalleryAdder
-import kotlinx.android.synthetic.main.toolbar.*
-import timber.log.Timber
-import kotlin.concurrent.thread
+import eu.kanade.tachiyomi.ui.base.activity.BaseRxActivity
+import eu.kanade.tachiyomi.ui.main.MainActivity
+import eu.kanade.tachiyomi.ui.manga.MangaController
+import eu.kanade.tachiyomi.util.gone
+import eu.kanade.tachiyomi.util.visible
+import kotlinx.android.synthetic.main.eh_activity_intercept.*
+import nucleus.factory.RequiresPresenter
+import rx.Subscription
+import rx.android.schedulers.AndroidSchedulers
 
-class InterceptActivity : BaseActivity() {
-
-    private val galleryAdder = GalleryAdder()
-
-    var finished = false
+@RequiresPresenter(InterceptActivityPresenter::class)
+class InterceptActivity : BaseRxActivity<InterceptActivityPresenter>() {
+    private var statusSubscription: Subscription? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        setAppTheme()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.eh_activity_intercept)
 
-        setupToolbar(toolbar, backNavigation = false)
+        //Show back button
+        setSupportActionBar(toolbar)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
-        if(savedInstanceState == null)
-            thread { setup() }
+        processLink()
     }
 
-    fun setup() {
-        try {
-            processLink()
-        } catch(t: Throwable) {
-            Timber.e(t, "Could not intercept link!")
-            if(!finished)
-                runOnUiThread {
-                    MaterialDialog.Builder(this)
-                            .title("Error")
-                            .content("Could not load this gallery!")
-                            .cancelable(true)
-                            .canceledOnTouchOutside(true)
-                            .cancelListener { onBackPressed() }
-                            .positiveText("Ok")
-                            .onPositive { _, _ -> onBackPressed() }
-                            .dismissListener { onBackPressed() }
-                            .show()
-                }
-        }
-    }
-
-    fun processLink() {
+    private fun processLink() {
         if(Intent.ACTION_VIEW == intent.action) {
-            val manga = galleryAdder.addGallery(intent.dataString)
-
-            if(!finished)
-                startActivity(MangaActivity.newIntent(this, manga, true))
-            onBackPressed()
+            intercept_progress.visible()
+            intercept_status.text = "Loading gallery..."
+            presenter.loadGallery(intent.dataString)
         }
     }
 
@@ -68,15 +46,41 @@ class InterceptActivity : BaseActivity() {
         return true
     }
 
-    override fun onBackPressed() {
-        if(!finished)
-            runOnUiThread {
-                super.onBackPressed()
-            }
+    override fun onStart() {
+        super.onStart()
+        statusSubscription?.unsubscribe()
+        statusSubscription = presenter.status
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe {
+                    when(it) {
+                        is InterceptResult.Success -> {
+                            intercept_progress.gone()
+                            intercept_status.text = "Launching app..."
+                            onBackPressed()
+                            startActivity(Intent(this, MainActivity::class.java)
+                                    .setAction(MainActivity.SHORTCUT_MANGA)
+                                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                                    .putExtra(MangaController.MANGA_EXTRA, it.mangaId))
+                        }
+                        is InterceptResult.Failure -> {
+                            intercept_progress.gone()
+                            intercept_status.text = "Error: ${it.reason}"
+                            MaterialDialog.Builder(this)
+                                    .title("Error")
+                                    .content("Could not open this gallery:\n\n${it.reason}")
+                                    .cancelable(true)
+                                    .canceledOnTouchOutside(true)
+                                    .positiveText("Ok")
+                                    .cancelListener { onBackPressed() }
+                                    .dismissListener { onBackPressed() }
+                                    .show()
+                        }
+                    }
+                }
     }
 
     override fun onStop() {
         super.onStop()
-        finished = true
+        statusSubscription?.unsubscribe()
     }
 }

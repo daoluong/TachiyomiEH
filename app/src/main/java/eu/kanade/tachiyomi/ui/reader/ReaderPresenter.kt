@@ -13,6 +13,7 @@ import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.database.models.Track
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
+import eu.kanade.tachiyomi.data.preference.getOrDefault
 import eu.kanade.tachiyomi.data.track.TrackManager
 import eu.kanade.tachiyomi.source.LocalSource
 import eu.kanade.tachiyomi.source.SourceManager
@@ -29,49 +30,27 @@ import rx.Subscription
 import rx.android.schedulers.AndroidSchedulers
 import rx.schedulers.Schedulers
 import timber.log.Timber
-import uy.kohesive.injekt.injectLazy
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import java.io.File
 import java.net.URLConnection
-import java.util.*
+import java.util.Comparator
+import java.util.Date
 
 /**
  * Presenter of [ReaderActivity].
  */
-class ReaderPresenter : BasePresenter<ReaderActivity>() {
-    /**
-     * Preferences.
-     */
-    val prefs: PreferencesHelper by injectLazy()
+class ReaderPresenter(
+        val prefs: PreferencesHelper = Injekt.get(),
+        val db: DatabaseHelper = Injekt.get(),
+        val downloadManager: DownloadManager = Injekt.get(),
+        val trackManager: TrackManager = Injekt.get(),
+        val sourceManager: SourceManager = Injekt.get(),
+        val chapterCache: ChapterCache = Injekt.get(),
+        val coverCache: CoverCache = Injekt.get()
+) : BasePresenter<ReaderActivity>() {
 
-    /**
-     * Database.
-     */
-    val db: DatabaseHelper by injectLazy()
-
-    /**
-     * Download manager.
-     */
-    val downloadManager: DownloadManager by injectLazy()
-
-    /**
-     * Tracking manager.
-     */
-    val trackManager: TrackManager by injectLazy()
-
-    /**
-     * Source manager.
-     */
-    val sourceManager: SourceManager by injectLazy()
-
-    /**
-     * Chapter cache.
-     */
-    val chapterCache: ChapterCache by injectLazy()
-
-    /**
-     * Cover cache.
-     */
-    val coverCache: CoverCache by injectLazy()
+    private val context = prefs.context
 
     /**
      * Manga being read.
@@ -98,7 +77,7 @@ class ReaderPresenter : BasePresenter<ReaderActivity>() {
     /**
      * Source of the manga.
      */
-    private val source by lazy { sourceManager.get(manga.source)!! }
+    /* private */ val source by lazy { sourceManager.getOrStub(manga.source) }
 
     /**
      * Chapter list for the active manga. It's retrieved lazily and should be accessed for the first
@@ -129,7 +108,7 @@ class ReaderPresenter : BasePresenter<ReaderActivity>() {
     /**
      * Chapter loader whose job is to obtain the chapter list and initialize every page.
      */
-    private val loader by lazy { ChapterLoader(downloadManager, manga, source) }
+    /* private */ val loader by lazy { ChapterLoader(downloadManager, manga, source) }
 
     /**
      * Subscription for appending a chapter to the reader (seamless mode).
@@ -177,7 +156,7 @@ class ReaderPresenter : BasePresenter<ReaderActivity>() {
 
         restartableLatestCache(LOAD_ACTIVE_CHAPTER,
                 { loadChapterObservable(chapter) },
-                { view, chapter -> view.onChapterReady(this.chapter) },
+                { view, _ -> view.onChapterReady(this.chapter) },
                 { view, error -> view.onChapterError(error) })
 
         if (savedState == null) {
@@ -298,7 +277,9 @@ class ReaderPresenter : BasePresenter<ReaderActivity>() {
 
         // If the chapter is partially read, set the starting page to the last the user read
         // otherwise use the requested page.
-        chapter.requestedPage = if (!chapter.read) chapter.last_page_read else requestedPage
+        chapter.requestedPage = if (!chapter.read /* --> EH */ || prefs
+                        .eh_preserveReadingPosition()
+                        .getOrDefault() /* <-- EH */) chapter.last_page_read else requestedPage
 
         // Reset next and previous chapter. They have to be fetched again
         nextChapter = null
@@ -338,7 +319,7 @@ class ReaderPresenter : BasePresenter<ReaderActivity>() {
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribeLatestCache({ view, chapter ->
                     view.onAppendChapter(chapter)
-                }, { view, error ->
+                }, { view, _ ->
                     view.onChapterAppendError()
                 })
     }
@@ -351,14 +332,17 @@ class ReaderPresenter : BasePresenter<ReaderActivity>() {
     fun retryPage(page: Page?) {
         if (page != null && source is HttpSource) {
             page.status = Page.QUEUE
-            val uri = page.uri
-            if (uri != null && !page.chapter.isDownloaded) {
-                chapterCache.removeFileFromCache(uri.encodedPath.substringAfterLast('/'))
+            val imageUrl = page.imageUrl
+            if (imageUrl != null && !page.chapter.isDownloaded) {
+                val key = DiskUtil.hashKeyForDisk(page.url)
+                chapterCache.removeFileFromCache(key)
             }
 
+            // --> EH
             //If we are using EHentai/ExHentai, get a new image URL
             if(source is EHentai)
                 page.imageUrl = null
+            // <-- EH
 
             loader.retryPage(page)
         }
@@ -439,7 +423,7 @@ class ReaderPresenter : BasePresenter<ReaderActivity>() {
     fun deleteChapter(chapter: ReaderChapter, manga: Manga) {
         chapter.isDownloaded = false
         chapter.pages?.forEach { it.status == Page.QUEUE }
-        downloadManager.deleteChapter(source, manga, chapter)
+        downloadManager.deleteChapter(chapter, manga, source)
     }
 
     /**

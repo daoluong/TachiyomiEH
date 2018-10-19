@@ -1,71 +1,52 @@
 package eu.kanade.tachiyomi.ui.category
 
-import android.graphics.Color
-import android.graphics.Typeface
 import android.view.View
-import com.amulyakhare.textdrawable.TextDrawable
-import com.amulyakhare.textdrawable.util.ColorGenerator
-import eu.davidea.viewholders.FlexibleViewHolder
 import eu.kanade.tachiyomi.data.database.models.Category
-import kotlinx.android.synthetic.main.item_edit_categories.view.*
+import eu.kanade.tachiyomi.ui.base.holder.BaseFlexibleViewHolder
+import eu.kanade.tachiyomi.util.getRound
+import kotlinx.android.synthetic.main.categories_item.*
 
 /**
- * Holder that contains category item.
- * Uses R.layout.item_edit_categories.
- * UI related actions should be called from here.
+ * Holder used to display category items.
  *
- * @param view view of category item.
- * @param adapter adapter belonging to holder.
- *
- * @constructor Create CategoryHolder object
+ * @param view The view used by category items.
+ * @param adapter The adapter containing this holder.
  */
-class CategoryHolder(view: View, val adapter: CategoryAdapter) : FlexibleViewHolder(view, adapter) {
+class CategoryHolder(view: View, val adapter: CategoryAdapter) : BaseFlexibleViewHolder(view, adapter) {
 
     init {
         // Create round letter image onclick to simulate long click
-        itemView.image.setOnClickListener {
+        image.setOnClickListener {
             // Simulate long click on this view to enter selection mode
             onLongClick(view)
         }
 
-        setDragHandleView(itemView.reorder)
+        setDragHandleView(reorder)
     }
 
     /**
-     * Update category item values.
+     * Binds this holder with the given category.
      *
-     * @param category category of item.
+     * @param category The category to bind.
      */
     fun bind(category: Category) {
         // Set capitalized title.
-        itemView.title.text = category.name.capitalize()
+        title.text = category.name.capitalize()
 
         // Update circle letter image.
         itemView.post {
-            itemView.image.setImageDrawable(getRound(category.name.take(1).toUpperCase()))
+            image.setImageDrawable(image.getRound(category.name.take(1).toUpperCase(),false))
         }
     }
 
     /**
-     * Returns circle letter image
+     * Called when an item is released.
      *
-     * @param text first letter of string
+     * @param position The position of the released item.
      */
-    private fun getRound(text: String): TextDrawable {
-        val size = Math.min(itemView.image.width, itemView.image.height)
-        return TextDrawable.builder()
-                .beginConfig()
-                .width(size)
-                .height(size)
-                .textColor(Color.WHITE)
-                .useFont(Typeface.DEFAULT)
-                .endConfig()
-                .buildRound(text, ColorGenerator.MATERIAL.getColor(text))
-    }
-
     override fun onItemReleased(position: Int) {
         super.onItemReleased(position)
-        adapter.onItemReleased()
+        adapter.onItemReleaseListener.onItemReleased(position)
     }
 
 }

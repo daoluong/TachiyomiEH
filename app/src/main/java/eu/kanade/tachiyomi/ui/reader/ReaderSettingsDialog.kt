@@ -9,8 +9,9 @@ import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
 import eu.kanade.tachiyomi.data.preference.getOrDefault
 import eu.kanade.tachiyomi.util.plusAssign
+import eu.kanade.tachiyomi.util.visibleIf
 import eu.kanade.tachiyomi.widget.IgnoreFirstSpinnerListener
-import kotlinx.android.synthetic.main.dialog_reader_settings.view.*
+import kotlinx.android.synthetic.main.reader_settings_dialog.view.*
 import rx.Observable
 import rx.android.schedulers.AndroidSchedulers
 import rx.subscriptions.CompositeSubscription
@@ -24,9 +25,9 @@ class ReaderSettingsDialog : DialogFragment() {
     private lateinit var subscriptions: CompositeSubscription
 
     override fun onCreateDialog(savedState: Bundle?): Dialog {
-        val dialog = MaterialDialog.Builder(activity)
+        val dialog = MaterialDialog.Builder(activity!!)
                 .title(R.string.label_settings)
-                .customView(R.layout.dialog_reader_settings, true)
+                .customView(R.layout.reader_settings_dialog, true)
                 .positiveText(android.R.string.ok)
                 .build()
 
@@ -40,8 +41,11 @@ class ReaderSettingsDialog : DialogFragment() {
         viewer.onItemSelectedListener = IgnoreFirstSpinnerListener { position ->
             subscriptions += Observable.timer(250, MILLISECONDS, AndroidSchedulers.mainThread())
                     .subscribe {
-                        (activity as ReaderActivity).presenter.updateMangaViewer(position)
-                        activity.recreate()
+                        val readerActivity = activity as? ReaderActivity
+                        if (readerActivity != null) {
+                            readerActivity.presenter.updateMangaViewer(position)
+                            readerActivity.recreate()
+                        }
                     }
         }
         viewer.setSelection((activity as ReaderActivity).presenter.manga.viewer, false)
@@ -75,19 +79,36 @@ class ReaderSettingsDialog : DialogFragment() {
         background_color.setSelection(preferences.readerTheme().getOrDefault(), false)
 
         show_page_number.isChecked = preferences.showPageNumber().getOrDefault()
-        show_page_number.setOnCheckedChangeListener { v, isChecked ->
+        show_page_number.setOnCheckedChangeListener { _, isChecked ->
             preferences.showPageNumber().set(isChecked)
         }
 
         fullscreen.isChecked = preferences.fullscreen().getOrDefault()
-        fullscreen.setOnCheckedChangeListener { v, isChecked ->
+        fullscreen.setOnCheckedChangeListener { _, isChecked ->
             preferences.fullscreen().set(isChecked)
         }
 
         crop_borders.isChecked = preferences.cropBorders().getOrDefault()
-        crop_borders.setOnCheckedChangeListener { v, isChecked ->
+        crop_borders.setOnCheckedChangeListener { _, isChecked ->
             preferences.cropBorders().set(isChecked)
         }
+
+        crop_borders_webtoon.isChecked = preferences.cropBordersWebtoon().getOrDefault()
+        crop_borders_webtoon.setOnCheckedChangeListener { _, isChecked ->
+            preferences.cropBordersWebtoon().set(isChecked)
+        }
+
+        val readerActivity = activity as? ReaderActivity
+        val isWebtoonViewer = if (readerActivity != null) {
+            val mangaViewer = readerActivity.presenter.manga.viewer
+            val viewer = if (mangaViewer == 0) preferences.defaultViewer() else mangaViewer
+            viewer == ReaderActivity.WEBTOON
+        } else {
+            false
+        }
+
+        crop_borders.visibleIf { !isWebtoonViewer }
+        crop_borders_webtoon.visibleIf { isWebtoonViewer }
     }
 
     override fun onDestroyView() {

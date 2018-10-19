@@ -10,8 +10,6 @@ import android.support.v4.os.EnvironmentCompat
 import java.io.File
 import java.io.InputStream
 import java.net.URLConnection
-import java.security.MessageDigest
-import java.security.NoSuchAlgorithmException
 
 object DiskUtil {
 
@@ -52,16 +50,7 @@ object DiskUtil {
     }
 
     fun hashKeyForDisk(key: String): String {
-        return try {
-            val bytes = MessageDigest.getInstance("MD5").digest(key.toByteArray())
-            val sb = StringBuilder()
-            bytes.forEach { byte ->
-                sb.append(Integer.toHexString(byte.toInt() and 0xFF or 0x100).substring(1, 3))
-            }
-            sb.toString()
-        } catch (e: NoSuchAlgorithmException) {
-            key.hashCode().toString()
-        }
+        return Hash.md5(key)
     }
 
     fun getDirectorySize(f: File): Long {
@@ -107,13 +96,20 @@ object DiskUtil {
      * Scans the given file so that it can be shown in gallery apps, for example.
      */
     fun scanMedia(context: Context, file: File) {
+        scanMedia(context, Uri.fromFile(file))
+    }
+
+    /**
+     * Scans the given file so that it can be shown in gallery apps, for example.
+     */
+    fun scanMedia(context: Context, uri: Uri) {
         val action = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) {
             Intent.ACTION_MEDIA_MOUNTED
         } else {
             Intent.ACTION_MEDIA_SCANNER_SCAN_FILE
         }
         val mediaScanIntent = Intent(action)
-        mediaScanIntent.data = Uri.fromFile(file)
+        mediaScanIntent.data = uri
         context.sendBroadcast(mediaScanIntent)
     }
 

@@ -2,9 +2,7 @@ package eu.kanade.tachiyomi.ui.catalogue.filter
 
 import android.support.graphics.drawable.VectorDrawableCompat
 import android.support.v4.content.ContextCompat
-import android.view.LayoutInflater
 import android.view.View
-import android.view.ViewGroup
 import android.widget.CheckedTextView
 import eu.davidea.flexibleadapter.FlexibleAdapter
 import eu.davidea.flexibleadapter.items.AbstractSectionableItem
@@ -15,13 +13,16 @@ import eu.kanade.tachiyomi.util.getResourceColor
 
 class SortItem(val name: String, val group: SortGroup) : AbstractSectionableItem<SortItem.Holder, SortGroup>(group) {
 
-    // Use an id instead of the layout res to allow to reuse the layout.
     override fun getLayoutRes(): Int {
-        return R.id.catalogue_filter_sort_item
+        return R.layout.navigation_view_checkedtext
     }
 
-    override fun createViewHolder(adapter: FlexibleAdapter<*>, inflater: LayoutInflater, parent: ViewGroup): Holder {
-        return Holder(inflater.inflate(R.layout.navigation_view_checkedtext, parent, false), adapter)
+    override fun getItemViewType(): Int {
+        return 102
+    }
+
+    override fun createViewHolder(view: View, adapter: FlexibleAdapter<*>): Holder {
+        return Holder(view, adapter)
     }
 
     override fun bindViewHolder(adapter: FlexibleAdapter<*>, holder: Holder, position: Int, payloads: List<Any?>?) {
@@ -32,9 +33,9 @@ class SortItem(val name: String, val group: SortGroup) : AbstractSectionableItem
         val i = filter.values.indexOf(name)
 
         fun getIcon() = when (filter.state) {
-            Filter.Sort.Selection(i, false) -> VectorDrawableCompat.create(view.resources, R.drawable.ic_keyboard_arrow_down_black_32dp, null)
+            Filter.Sort.Selection(i, false) -> VectorDrawableCompat.create(view.resources, R.drawable.ic_arrow_down_white_32dp, null)
                     ?.apply { setTint(view.context.getResourceColor(R.attr.colorAccent)) }
-            Filter.Sort.Selection(i, true) -> VectorDrawableCompat.create(view.resources, R.drawable.ic_keyboard_arrow_up_black_32dp, null)
+            Filter.Sort.Selection(i, true) -> VectorDrawableCompat.create(view.resources, R.drawable.ic_arrow_up_white_32dp, null)
                     ?.apply { setTint(view.context.getResourceColor(R.attr.colorAccent)) }
             else -> ContextCompat.getDrawable(view.context, R.drawable.empty_drawable_32dp)
         }
@@ -54,10 +55,9 @@ class SortItem(val name: String, val group: SortGroup) : AbstractSectionableItem
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other is SortItem) {
-            return name == other.name && group == other.group
-        }
-        return false
+        if (javaClass != other?.javaClass) return false
+        other as SortItem
+        return name == other.name && group == other.group
     }
 
     override fun hashCode(): Int {
@@ -68,7 +68,7 @@ class SortItem(val name: String, val group: SortGroup) : AbstractSectionableItem
 
     class Holder(view: View, adapter: FlexibleAdapter<*>) : FlexibleViewHolder(view, adapter) {
 
-        val text = itemView.findViewById(R.id.nav_view_item) as CheckedTextView
+        val text: CheckedTextView = itemView.findViewById(R.id.nav_view_item)
     }
 
 }

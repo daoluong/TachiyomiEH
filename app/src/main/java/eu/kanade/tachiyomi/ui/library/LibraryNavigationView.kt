@@ -15,7 +15,7 @@ import uy.kohesive.injekt.injectLazy
  * The navigation view shown in a drawer with the different options to show the library.
  */
 class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null)
-: ExtendedNavigationView(context, attrs) {
+    : ExtendedNavigationView(context, attrs) {
 
     /**
      * Preferences helper.
@@ -25,7 +25,7 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
     /**
      * List of groups shown in the view.
      */
-    private val groups = listOf(FilterGroup(), SortGroup(),  DisplayGroup())
+    private val groups = listOf(FilterGroup(), SortGroup(), DisplayGroup(), BadgeGroup())
 
     /**
      * Adapter instance.
@@ -62,7 +62,6 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
                 onGroupClicked(item.group)
             }
         }
-        
     }
 
     /**
@@ -74,7 +73,9 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
 
         private val unread = Item.CheckboxGroup(R.string.action_filter_unread, this)
 
-        override val items = listOf(downloaded, unread)
+        private val completed = Item.CheckboxGroup(R.string.completed, this)
+
+        override val items = listOf(downloaded, unread, completed)
 
         override val header = Item.Header(R.string.action_filter)
 
@@ -83,6 +84,7 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
         override fun initModels() {
             downloaded.checked = preferences.filterDownloaded().getOrDefault()
             unread.checked = preferences.filterUnread().getOrDefault()
+            completed.checked = preferences.filterCompleted().getOrDefault()
         }
 
         override fun onItemClicked(item: Item) {
@@ -91,11 +93,11 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
             when (item) {
                 downloaded -> preferences.filterDownloaded().set(item.checked)
                 unread -> preferences.filterUnread().set(item.checked)
+                completed -> preferences.filterCompleted().set(item.checked)
             }
 
             adapter.notifyItemChanged(item)
         }
-
     }
 
     /**
@@ -105,13 +107,17 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
 
         private val alphabetically = Item.MultiSort(R.string.action_sort_alpha, this)
 
+        private val total = Item.MultiSort(R.string.action_sort_total, this)
+
         private val lastRead = Item.MultiSort(R.string.action_sort_last_read, this)
 
         private val lastUpdated = Item.MultiSort(R.string.action_sort_last_updated, this)
 
         private val unread = Item.MultiSort(R.string.action_filter_unread, this)
 
-        override val items = listOf(alphabetically, lastRead, lastUpdated, unread)
+        private val source = Item.MultiSort(R.string.manga_info_source_label, this)
+
+        override val items = listOf(alphabetically, lastRead, lastUpdated, unread, total, source)
 
         override val header = Item.Header(R.string.action_sort)
 
@@ -126,6 +132,8 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
             lastRead.state = if (sorting == LibrarySort.LAST_READ) order else SORT_NONE
             lastUpdated.state = if (sorting == LibrarySort.LAST_UPDATED) order else SORT_NONE
             unread.state = if (sorting == LibrarySort.UNREAD) order else SORT_NONE
+            total.state = if (sorting == LibrarySort.TOTAL) order else SORT_NONE
+            source.state = if (sorting == LibrarySort.SOURCE) order else SORT_NONE
         }
 
         override fun onItemClicked(item: Item) {
@@ -145,6 +153,8 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
                 lastRead -> LibrarySort.LAST_READ
                 lastUpdated -> LibrarySort.LAST_UPDATED
                 unread -> LibrarySort.UNREAD
+                total -> LibrarySort.TOTAL
+                source -> LibrarySort.SOURCE
                 else -> throw Exception("Unknown sorting")
             })
             preferences.librarySortingAscending().set(if (item.state == SORT_ASC) true else false)
@@ -152,6 +162,23 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
             item.group.items.forEach { adapter.notifyItemChanged(it) }
         }
 
+    }
+
+    inner class BadgeGroup : Group {
+        private val downloadBadge = Item.CheckboxGroup(R.string.action_display_download_badge, this)
+        override val header = null
+        override val footer = null
+        override val items = listOf(downloadBadge)
+        override fun initModels() {
+            downloadBadge.checked = preferences.downloadBadge().getOrDefault()
+        }
+
+        override fun onItemClicked(item: Item) {
+            item as Item.CheckboxGroup
+            item.checked = !item.checked
+            preferences.downloadBadge().set((item.checked))
+            adapter.notifyItemChanged(item)
+        }
     }
 
     /**
@@ -186,7 +213,5 @@ class LibraryNavigationView @JvmOverloads constructor(context: Context, attrs: A
 
             item.group.items.forEach { adapter.notifyItemChanged(it) }
         }
-
     }
-
 }

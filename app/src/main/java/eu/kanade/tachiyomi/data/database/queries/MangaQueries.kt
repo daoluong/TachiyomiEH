@@ -4,8 +4,10 @@ import com.pushtorefresh.storio.sqlite.queries.DeleteQuery
 import com.pushtorefresh.storio.sqlite.queries.Query
 import com.pushtorefresh.storio.sqlite.queries.RawQuery
 import eu.kanade.tachiyomi.data.database.DbProvider
+import eu.kanade.tachiyomi.data.database.models.LibraryManga
 import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.database.resolvers.LibraryMangaGetResolver
+import eu.kanade.tachiyomi.data.database.resolvers.MangaFavoritePutResolver
 import eu.kanade.tachiyomi.data.database.resolvers.MangaFlagsPutResolver
 import eu.kanade.tachiyomi.data.database.resolvers.MangaLastUpdatedPutResolver
 import eu.kanade.tachiyomi.data.database.tables.CategoryTable
@@ -23,7 +25,7 @@ interface MangaQueries : DbProvider {
             .prepare()
 
     fun getLibraryMangas() = db.get()
-            .listOfObjects(Manga::class.java)
+            .listOfObjects(LibraryManga::class.java)
             .withQuery(RawQuery.builder()
                     .query(libraryQuery)
                     .observesTables(MangaTable.TABLE, ChapterTable.TABLE, MangaCategoryTable.TABLE, CategoryTable.TABLE)
@@ -73,6 +75,11 @@ interface MangaQueries : DbProvider {
             .withPutResolver(MangaLastUpdatedPutResolver())
             .prepare()
 
+    fun updateMangaFavorite(manga: Manga) = db.put()
+            .`object`(manga)
+            .withPutResolver(MangaFavoritePutResolver())
+            .prepare()
+
     fun deleteManga(manga: Manga) = db.delete().`object`(manga).prepare()
 
     fun deleteMangas(mangas: List<Manga>) = db.delete().objects(mangas).prepare()
@@ -98,4 +105,7 @@ interface MangaQueries : DbProvider {
                     .observesTables(MangaTable.TABLE)
                     .build())
             .prepare()
+
+    fun getTotalChapterManga() = db.get().listOfObjects(Manga::class.java)
+            .withQuery(RawQuery.builder().query(getTotalChapterMangaQuery()).observesTables(MangaTable.TABLE).build()).prepare();
 }

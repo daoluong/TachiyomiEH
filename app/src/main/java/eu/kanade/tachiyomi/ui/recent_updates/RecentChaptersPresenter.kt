@@ -1,11 +1,9 @@
 package eu.kanade.tachiyomi.ui.recent_updates
 
 import android.os.Bundle
-import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.data.database.DatabaseHelper
 import eu.kanade.tachiyomi.data.database.models.MangaChapter
 import eu.kanade.tachiyomi.data.download.DownloadManager
-import eu.kanade.tachiyomi.data.download.DownloadService
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
 import eu.kanade.tachiyomi.source.SourceManager
@@ -14,29 +12,18 @@ import rx.Observable
 import rx.android.schedulers.AndroidSchedulers
 import rx.schedulers.Schedulers
 import timber.log.Timber
-import uy.kohesive.injekt.injectLazy
-import java.util.*
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+import java.util.Calendar
+import java.util.Date
+import java.util.TreeMap
 
-class RecentChaptersPresenter : BasePresenter<RecentChaptersFragment>() {
-    /**
-     * Used to connect to database
-     */
-    val db: DatabaseHelper by injectLazy()
-
-    /**
-     * Used to get settings
-     */
-    val preferences: PreferencesHelper by injectLazy()
-
-    /**
-     * Used to get information from download manager
-     */
-    val downloadManager: DownloadManager by injectLazy()
-
-    /**
-     * Used to get source from source id
-     */
-    val sourceManager: SourceManager by injectLazy()
+class RecentChaptersPresenter(
+        val preferences: PreferencesHelper = Injekt.get(),
+        private val db: DatabaseHelper = Injekt.get(),
+        private val downloadManager: DownloadManager = Injekt.get(),
+        private val sourceManager: SourceManager = Injekt.get()
+) : BasePresenter<RecentChaptersController>() {
 
     /**
      * List containing chapter and manga information
@@ -48,11 +35,11 @@ class RecentChaptersPresenter : BasePresenter<RecentChaptersFragment>() {
 
         getRecentChaptersObservable()
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribeLatestCache(RecentChaptersFragment::onNextRecentChapters)
+                .subscribeLatestCache(RecentChaptersController::onNextRecentChapters)
 
         getChapterStatusObservable()
-                .subscribeLatestCache(RecentChaptersFragment::onChapterStatusChange,
-                        { view, error -> Timber.e(error) })
+                .subscribeLatestCache(RecentChaptersController::onChapterStatusChange,
+                        { _, error -> Timber.e(error) })
     }
 
     /**
@@ -71,7 +58,8 @@ class RecentChaptersPresenter : BasePresenter<RecentChaptersFragment>() {
                 // Convert to a list of recent chapters.
                 .map { mangaChapters ->
                     val map = TreeMap<Date, MutableList<MangaChapter>> { d1, d2 -> d2.compareTo(d1) }
-                    val byDay = mangaChapters.groupByTo(map, { getMapKey(it.chapter.date_fetch) })
+                    val byDay = mangaChapters
+                            .groupByTo(map, { getMapKey(it.chapter.date_fetch) })
                     byDay.flatMap {
                         val dateItem = DateItem(it.key)
                         it.value.map { RecentChapterItem(it.chapter, it.manga, dateItem) }
@@ -126,36 +114,11 @@ class RecentChaptersPresenter : BasePresenter<RecentChaptersFragment>() {
      * @param items the list of chapter from the database.
      */
     private fun setDownloadedChapters(items: List<RecentChapterItem>) {
-        // Cached list of downloaded manga directories. Directory name is also cached because
-        // it's slow when using SAF.
-        val mangaDirsForSource = mutableMapOf<Long, Map<String?, UniFile>>()
-
-        // Cached list of downloaded chapter directories for a manga.
-        val chapterDirsForManga = mutableMapOf<Long, Map<String?, UniFile>>()
-
         for (item in items) {
             val manga = item.manga
             val chapter = item.chapter
-            val source = sourceManager.get(manga.source) ?: continue
 
-            // Get the directories for the source of the manga.
-            val dirsForSource = mangaDirsForSource.getOrPut(source.id) {
-                val sourceDir = downloadManager.findSourceDir(source)
-                sourceDir?.listFiles()?.associateBy { it.name }.orEmpty()
-            }
-
-            // Get the manga directory in the source or continue.
-            val mangaDirName = downloadManager.getMangaDirName(manga)
-            val mangaDir = dirsForSource[mangaDirName] ?: continue
-
-            // Get the directories for the manga.
-            val chapterDirs = chapterDirsForManga.getOrPut(manga.id!!) {
-                mangaDir.listFiles()?.associateBy { it.name }.orEmpty()
-            }
-
-            // Assign the download if the directory exists.
-            val chapterDirName = downloadManager.getChapterDirName(chapter)
-            if (chapterDirName in chapterDirs) {
+            if (downloadManager.isChapterDownloaded(chapter, manga)) {
                 item.status = Download.DOWNLOADED
             }
         }
@@ -207,9 +170,9 @@ class RecentChaptersPresenter : BasePresenter<RecentChaptersFragment>() {
                 .toList()
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribeFirst({ view, result ->
+                .subscribeFirst({ view, _ ->
                     view.onChaptersDeleted()
-                }, RecentChaptersFragment::onChaptersDeletedError)
+                }, RecentChaptersController::onChaptersDeletedError)
     }
 
     /**
@@ -218,7 +181,6 @@ class RecentChaptersPresenter : BasePresenter<RecentChaptersFragment>() {
      */
     fun downloadChapters(items: List<RecentChapterItem>) {
         items.forEach { downloadManager.downloadChapters(it.manga, listOf(it.chapter)) }
-        DownloadService.start(context)
     }
 
     /**
@@ -229,7 +191,7 @@ class RecentChaptersPresenter : BasePresenter<RecentChaptersFragment>() {
     private fun deleteChapter(item: RecentChapterItem) {
         val source = sourceManager.get(item.manga.source) ?: return
         downloadManager.queue.remove(item.chapter)
-        downloadManager.deleteChapter(source, item.manga, item.chapter)
+        downloadManager.deleteChapter(item.chapter, item.manga, source)
         item.status = Download.NOT_DOWNLOADED
         item.download = null
     }

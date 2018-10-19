@@ -3,12 +3,12 @@ package eu.kanade.tachiyomi.data.download
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.support.v4.app.NotificationCompat
-import eu.kanade.tachiyomi.Constants
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.data.download.model.DownloadQueue
 import eu.kanade.tachiyomi.data.notification.NotificationHandler
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
+import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.util.chop
 import eu.kanade.tachiyomi.util.notificationManager
 import java.util.regex.Pattern
@@ -23,7 +23,7 @@ internal class DownloadNotifier(private val context: Context) {
      * Notification builder.
      */
     private val notification by lazy {
-        NotificationCompat.Builder(context)
+        NotificationCompat.Builder(context, Notifications.CHANNEL_DOWNLOADER)
                 .setLargeIcon(BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher))
     }
 
@@ -36,18 +36,12 @@ internal class DownloadNotifier(private val context: Context) {
      * The size of queue on start download.
      */
     var initialQueueSize = 0
-        get() = field
         set(value) {
             if (value != 0){
                 isSingleChapter = (value == 1)
             }
             field = value
         }
-
-    /**
-     * Simultaneous download setting > 1.
-     */
-    var multipleDownloadThreads = false
 
     /**
      * Updated when error is thrown
@@ -69,7 +63,7 @@ internal class DownloadNotifier(private val context: Context) {
      *
      * @param id the id of the notification.
      */
-    private fun NotificationCompat.Builder.show(id: Int = Constants.NOTIFICATION_DOWNLOAD_CHAPTER_ID) {
+    private fun NotificationCompat.Builder.show(id: Int = Notifications.ID_DOWNLOAD_CHAPTER) {
         context.notificationManager.notify(id, build())
     }
 
@@ -86,41 +80,15 @@ internal class DownloadNotifier(private val context: Context) {
      * those can only be dismissed by the user.
      */
     fun dismiss() {
-        context.notificationManager.cancel(Constants.NOTIFICATION_DOWNLOAD_CHAPTER_ID)
+        context.notificationManager.cancel(Notifications.ID_DOWNLOAD_CHAPTER)
     }
 
     /**
      * Called when download progress changes.
-     * Note: Only accepted when multi download active.
-     *
-     * @param queue the queue containing downloads.
-     */
-    fun onProgressChange(queue: DownloadQueue) {
-        if (multipleDownloadThreads) {
-            doOnProgressChange(null, queue)
-        }
-    }
-
-    /**
-     * Called when download progress changes.
-     * Note: Only accepted when single download active.
      *
      * @param download download object containing download information.
-     * @param queue the queue containing downloads.
      */
-    fun onProgressChange(download: Download, queue: DownloadQueue) {
-        if (!multipleDownloadThreads) {
-            doOnProgressChange(download, queue)
-        }
-    }
-
-    /**
-     * Show notification progress of chapter.
-     *
-     * @param download download object containing download information.
-     * @param queue the queue containing downloads.
-     */
-    private fun doOnProgressChange(download: Download?, queue: DownloadQueue) {
+    fun onProgressChange(download: Download) {
         // Create notification
         with(notification) {
             // Check if first call.
@@ -133,28 +101,13 @@ internal class DownloadNotifier(private val context: Context) {
                 isDownloading = true
             }
 
-            if (multipleDownloadThreads) {
-                setContentTitle(context.getString(R.string.app_name))
-
-                // Reset the queue size if the download progress is negative
-                if ((initialQueueSize - queue.size) < 0)
-                    initialQueueSize = queue.size
-
-                setContentText(context.getString(R.string.chapter_downloading_progress)
-                        .format(initialQueueSize - queue.size, initialQueueSize))
-                setProgress(initialQueueSize, initialQueueSize - queue.size, false)
-            } else {
-                download?.let {
-                    val title = it.manga.title.chop(15)
-                    val quotedTitle = Pattern.quote(title)
-                    val chapter = download.chapter.name.replaceFirst("$quotedTitle[\\s]*[-]*[\\s]*".toRegex(RegexOption.IGNORE_CASE), "")
-                    setContentTitle("$title - $chapter".chop(30))
-                    setContentText(context.getString(R.string.chapter_downloading_progress)
-                            .format(it.downloadedImages, it.pages!!.size))
-                    setProgress(it.pages!!.size, it.downloadedImages, false)
-
-                }
-            }
+            val title = download.manga.title.chop(15)
+            val quotedTitle = Pattern.quote(title)
+            val chapter = download.chapter.name.replaceFirst("$quotedTitle[\\s]*[-]*[\\s]*".toRegex(RegexOption.IGNORE_CASE), "")
+            setContentTitle("$title - $chapter".chop(30))
+            setContentText(context.getString(R.string.chapter_downloading_progress)
+                    .format(download.downloadedImages, download.pages!!.size))
+            setProgress(download.pages!!.size, download.downloadedImages, false)
         }
         // Displays the progress bar on notification
         notification.show()
@@ -262,7 +215,7 @@ internal class DownloadNotifier(private val context: Context) {
             setContentIntent(NotificationHandler.openDownloadManagerPendingActivity(context))
             setProgress(0, 0, false)
         }
-        notification.show(Constants.NOTIFICATION_DOWNLOAD_CHAPTER_ERROR_ID)
+        notification.show(Notifications.ID_DOWNLOAD_CHAPTER_ERROR)
 
         // Reset download information
         errorThrown = true

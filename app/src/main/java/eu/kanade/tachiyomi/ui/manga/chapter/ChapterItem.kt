@@ -1,7 +1,6 @@
 package eu.kanade.tachiyomi.ui.manga.chapter
 
-import android.view.LayoutInflater
-import android.view.ViewGroup
+import android.view.View
 import eu.davidea.flexibleadapter.FlexibleAdapter
 import eu.davidea.flexibleadapter.items.AbstractFlexibleItem
 import eu.kanade.tachiyomi.R
@@ -24,14 +23,18 @@ class ChapterItem(val chapter: Chapter, val manga: Manga) : AbstractFlexibleItem
         get() = status == Download.DOWNLOADED
 
     override fun getLayoutRes(): Int {
-        return R.layout.item_chapter
+        return R.layout.chapters_item
     }
 
-    override fun createViewHolder(adapter: FlexibleAdapter<*>, inflater: LayoutInflater, parent: ViewGroup): ChapterHolder {
-        return ChapterHolder(inflater.inflate(layoutRes, parent, false), adapter as ChaptersAdapter)
+    override fun createViewHolder(view: View, adapter: FlexibleAdapter<*>): ChapterHolder {
+        return ChapterHolder(view, adapter as ChaptersAdapter)
     }
 
-    override fun bindViewHolder(adapter: FlexibleAdapter<*>, holder: ChapterHolder, position: Int, payloads: List<Any?>?) {
+    override fun bindViewHolder(adapter: FlexibleAdapter<*>,
+                                holder: ChapterHolder,
+                                position: Int,
+                                payloads: List<Any?>?) {
+
         holder.bind(this, manga)
     }
 
