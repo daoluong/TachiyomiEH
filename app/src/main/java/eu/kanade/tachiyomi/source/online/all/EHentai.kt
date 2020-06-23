@@ -2,20 +2,32 @@ package eu.kanade.tachiyomi.source.online.all
 
 import android.content.Context
 import android.net.Uri
+import com.elvishew.xlog.XLog
+import com.github.salomonbrys.kotson.*
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
 import eu.kanade.tachiyomi.data.preference.getOrDefault
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.asObservableSuccess
+import eu.kanade.tachiyomi.network.asObservableWithAsyncStacktrace
 import eu.kanade.tachiyomi.source.model.*
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.source.online.LewdSource
+import eu.kanade.tachiyomi.source.online.UrlImportableSource
 import eu.kanade.tachiyomi.util.asJsoup
+import exh.eh.EHentaiUpdateHelper
 import exh.metadata.EX_DATE_FORMAT
-import exh.metadata.models.ExGalleryMetadata
-import exh.metadata.models.Tag
+import exh.metadata.metadata.EHentaiSearchMetadata
+import exh.metadata.metadata.EHentaiSearchMetadata.Companion.EH_GENRE_NAMESPACE
+import exh.metadata.metadata.EHentaiSearchMetadata.Companion.TAG_TYPE_LIGHT
+import exh.metadata.metadata.EHentaiSearchMetadata.Companion.TAG_TYPE_NORMAL
+import exh.metadata.metadata.base.RaisedSearchMetadata.Companion.TAG_TYPE_VIRTUAL
 import exh.metadata.nullIfBlank
 import exh.metadata.parseHumanReadableByteCount
+import exh.debug.DebugToggles
 import exh.ui.login.LoginController
 import exh.util.UriFilter
 import exh.util.UriGroup
@@ -28,10 +40,19 @@ import rx.Observable
 import uy.kohesive.injekt.injectLazy
 import java.net.URLEncoder
 import java.util.*
+import exh.metadata.metadata.base.RaisedTag
+import exh.eh.EHentaiUpdateWorkerConstants
+import exh.eh.GalleryEntry
+import kotlinx.coroutines.runBlocking
+import org.jsoup.nodes.TextNode
+import rx.Single
+import java.lang.RuntimeException
 
+// TODO Consider gallery updating when doing tabbed browsing
 class EHentai(override val id: Long,
               val exh: Boolean,
-              val context: Context) : HttpSource(), LewdSource<ExGalleryMetadata, Response> {
+              val context: Context) : HttpSource(), LewdSource<EHentaiSearchMetadata, Document>, UrlImportableSource {
+    override val metaClass = EHentaiSearchMetadata::class
 
     val schema: String
         get() = if(prefs.secureEXH().getOrDefault())
@@ -51,7 +72,8 @@ class EHentai(override val id: Long,
     override val lang = "all"
     override val supportsLatest = true
 
-    val prefs: PreferencesHelper by injectLazy()
+    private val prefs: PreferencesHelper by injectLazy()
+    private val updateHelper: EHentaiUpdateHelper by injectLazy()
 
     /**
      * Gallery list entry
@@ -60,26 +82,29 @@ class EHentai(override val id: Long,
 
     fun extendedGenericMangaParse(doc: Document)
             = with(doc) {
-        //Parse mangas
-        val parsedMangas = select(".gtr0,.gtr1").map {
+        // Parse mangas (supports compact + extended layout)
+        val parsedMangas = select(".itg > tbody > tr").filter {
+            // Do not parse header and ads
+            it.selectFirst("th") == null && it.selectFirst(".itd") == null
+        }.map {
+            val thumbnailElement = it.selectFirst(".gl1e img, .gl2c .glthumb img")
+            val column2 = it.selectFirst(".gl3e, .gl2c")
+            val linkElement = it.selectFirst(".gl3c > a, .gl2e > div > a")
+
+            val favElement = column2.children().find { it.attr("style").startsWith("border-color") }
+
             ParsedManga(
-                    fav = parseFavoritesStyle(it.select(".itd .it3 > .i[id]").first()?.attr("style")),
+                    fav = FAVORITES_BORDER_HEX_COLORS.indexOf(
+                            favElement?.attr("style")?.substring(14, 17)
+                    ),
                     manga = Manga.create(id).apply {
                         //Get title
-                        it.select(".itd .it5 a").first()?.apply {
-                            title = text()
-                            url = ExGalleryMetadata.normalizeUrl(attr("href"))
-                        }
+                        title = thumbnailElement.attr("title")
+                        url = EHentaiSearchMetadata.normalizeUrl(linkElement.attr("href"))
                         //Get image
-                        it.select(".itd .it2").first()?.apply {
-                            children().first()?.let {
-                                thumbnail_url = it.attr("src")
-                            } ?: let {
-                                text().split("~").apply {
-                                    thumbnail_url = "http://${this[1]}/${this[2]}"
-                                }
-                            }
-                        }
+                        thumbnail_url = thumbnailElement.attr("src")
+
+                        // TODO Parse genre + uploader + tags
                     })
         }
 
@@ -97,14 +122,6 @@ class EHentai(override val id: Long,
         Pair(parsedMangas, hasNextPage)
     }
 
-    fun parseFavoritesStyle(style: String?): Int {
-        val offset = style?.substringAfterLast("background-position:0px ")
-                ?.removeSuffix("px; cursor:pointer")
-                ?.toIntOrNull() ?: return -1
-
-        return (offset + 2)/-19
-    }
-
     /**
      * Parse a list of galleries
      */
@@ -113,15 +130,86 @@ class EHentai(override val id: Long,
         MangasPage(it.first.map { it.manga }, it.second)
     }
 
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>>
-            = Observable.just(listOf(SChapter.create().apply {
-        url = manga.url
-        name = "Chapter"
-        chapter_number = 1f
-    }))
+    override fun fetchChapterList(manga: SManga)
+            = fetchChapterList(manga) {}
+
+    fun fetchChapterList(manga: SManga, throttleFunc: () -> Unit): Observable<List<SChapter>> {
+        return Single.fromCallable {
+            // Pull all the way to the root gallery
+            // We can't do this with RxJava or we run into stack overflows on shit like this:
+            //   https://exhentai.org/g/1073061/f9345f1c12/
+            var url: String = manga.url
+            var doc: Document? = null
+
+            runBlocking {
+                while (true) {
+                    val gid = EHentaiSearchMetadata.galleryId(url).toInt()
+                    val cachedParent = updateHelper.parentLookupTable.get(
+                            gid
+                    )
+                    if(cachedParent == null) {
+                        throttleFunc()
+
+                        val resp = client.newCall(exGet(baseUrl + url)).execute()
+                        if (!resp.isSuccessful) error("HTTP error (${resp.code()})!")
+                        doc = resp.asJsoup()
+
+                        val parentLink = doc!!.select("#gdd .gdt1").find { el ->
+                            el.text().toLowerCase() == "parent:"
+                        }!!.nextElementSibling().selectFirst("a")?.attr("href")
+
+                        if (parentLink != null) {
+                            updateHelper.parentLookupTable.put(
+                                    gid,
+                                    GalleryEntry(
+                                            EHentaiSearchMetadata.galleryId(parentLink),
+                                            EHentaiSearchMetadata.galleryToken(parentLink)
+                                    )
+                            )
+                            url = EHentaiSearchMetadata.normalizeUrl(parentLink)
+                        } else break
+                    } else {
+                        XLog.d("Parent cache hit: %s!", gid)
+                        url = EHentaiSearchMetadata.idAndTokenToUrl(
+                                cachedParent.gId,
+                                cachedParent.gToken
+                        )
+                    }
+                }
+            }
+
+            doc!!
+        }.map { d ->
+            val newDisplay = d.select("#gnd a")
+            // Build chapter for root gallery
+            val self = SChapter.create().apply {
+                url = EHentaiSearchMetadata.normalizeUrl(d.location())
+                name = "v1: " + d.selectFirst("#gn").text()
+                chapter_number = 1f
+                date_upload = EX_DATE_FORMAT.parse(d.select("#gdd .gdt1").find { el ->
+                    el.text().toLowerCase() == "posted:"
+                }!!.nextElementSibling().text()).time
+            }
+            // Build and append the rest of the galleries
+            if(DebugToggles.INCLUDE_ONLY_ROOT_WHEN_LOADING_EXH_VERSIONS.enabled) listOf(self)
+            else {
+                newDisplay.mapIndexed { index, newGallery ->
+                    val link = newGallery.attr("href")
+                    val name = newGallery.text()
+                    val posted = (newGallery.nextSibling() as TextNode).text().removePrefix(", added ")
+                    SChapter.create().apply {
+                        this.url = EHentaiSearchMetadata.normalizeUrl(link)
+                        this.name = "v${index + 2}: $name"
+                        this.chapter_number = index + 2f
+                        this.date_upload = EX_DATE_FORMAT.parse(posted).time
+                    }
+                }.reversed() + self
+            }
+        }.toObservable()
+    }
 
     override fun fetchPageList(chapter: SChapter)
-            = fetchChapterPage(chapter, "$baseUrl/${chapter.url}").map {
+            = fetchChapterPage(chapter, baseUrl + chapter.url).map {
         it.mapIndexed { i, s ->
             Page(i, s)
         }
@@ -158,17 +246,17 @@ class EHentai(override val id: Long,
     override fun popularMangaRequest(page: Int) = if(exh)
         latestUpdatesRequest(page)
     else
-        exGet("$baseUrl/toplist.php?tl=15", page)
+        exGet("$baseUrl/toplist.php?tl=15&p=${page - 1}", null) // Custom page logic for toplists
 
     //Support direct URL importing
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList) =
-            urlImportFetchSearchManga(query, {
+            urlImportFetchSearchManga(query) {
                 searchMangaRequestObservable(page, query, filters).flatMap {
                     client.newCall(it).asObservableSuccess()
                 } .map { response ->
                     searchMangaParse(response)
                 }
-            })
+            }
 
     private fun searchMangaRequestObservable(page: Int, query: String, filters: FilterList): Observable<Request> {
         val uri = Uri.parse("$baseUrl$QUERY_PREFIX").buildUpon()
@@ -229,82 +317,141 @@ class EHentai(override val id: Long,
     }!!
 
     /**
-     * Parse gallery page to metadata model
+     * Returns an observable with the updated details for a manga. Normally it's not needed to
+     * override this method.
+     *
+     * @param manga the manga to be updated.
      */
-    override fun mangaDetailsParse(response: Response): SManga {
-        return parseToManga(queryFromUrl(response.request().url().toString()), response)
+    override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
+        return client.newCall(mangaDetailsRequest(manga))
+                .asObservableWithAsyncStacktrace()
+                .flatMap { (stacktrace, response) ->
+                    if(response.isSuccessful) {
+                        // Pull to most recent
+                        val doc = response.asJsoup()
+                        val newerGallery = doc.select("#gnd a").lastOrNull()
+                        val pre = if(newerGallery != null && DebugToggles.PULL_TO_ROOT_WHEN_LOADING_EXH_MANGA_DETAILS.enabled) {
+                            manga.url = EHentaiSearchMetadata.normalizeUrl(newerGallery.attr("href"))
+                            client.newCall(mangaDetailsRequest(manga))
+                                    .asObservableSuccess().map { it.asJsoup() }
+                        } else Observable.just(doc)
+
+                        pre.flatMap {
+                            parseToManga(manga, it).andThen(Observable.just(manga.apply {
+                                initialized = true
+                            }))
+                        }
+                    } else {
+                        response.close()
+
+                        if(response.code() == 404) {
+                            throw GalleryNotFoundException(stacktrace)
+                        } else {
+                            throw Exception("HTTP error ${response.code()}", stacktrace)
+                        }
+                    }
+                }
     }
 
-    override val metaParser: ExGalleryMetadata.(Response) -> Unit = { response ->
-        with(response.asJsoup()) {
-            url = response.request().url().encodedPath()!!
-            gId = ExGalleryMetadata.galleryId(url!!)
-            gToken = ExGalleryMetadata.galleryToken(url!!)
+    /**
+     * Parse gallery page to metadata model
+     */
+    override fun mangaDetailsParse(response: Response) = throw UnsupportedOperationException()
 
-            exh = this@EHentai.exh
-            title = select("#gn").text().nullIfBlank()?.trim()
+    override fun parseIntoMetadata(metadata: EHentaiSearchMetadata, input: Document) {
+        with(metadata) {
+            with(input) {
+                val url = input.location()
+                gId = EHentaiSearchMetadata.galleryId(url)
+                gToken = EHentaiSearchMetadata.galleryToken(url)
 
-            altTitle = select("#gj").text().nullIfBlank()?.trim()
+                exh = this@EHentai.exh
+                title = select("#gn").text().nullIfBlank()?.trim()
 
-            thumbnailUrl = select("#gd1 div").attr("style").nullIfBlank()?.let {
-                it.substring(it.indexOf('(') + 1 until it.lastIndexOf(')'))
-            }
-            genre = select(".ic").parents().attr("href").nullIfBlank()?.trim()?.substringAfterLast('/')
+                altTitle = select("#gj").text().nullIfBlank()?.trim()
 
-            uploader = select("#gdn").text().nullIfBlank()?.trim()
-
-            //Parse the table
-            select("#gdd tr").forEach {
-                it.select(".gdt1")
-                        .text()
+                thumbnailUrl = select("#gd1 div").attr("style").nullIfBlank()?.let {
+                    it.substring(it.indexOf('(') + 1 until it.lastIndexOf(')'))
+                }
+                genre = select(".cs")
+                        .attr("onclick")
                         .nullIfBlank()
                         ?.trim()
-                        ?.let { left ->
-                            it.select(".gdt2")
-                                    .text()
-                                    .nullIfBlank()
-                                    ?.trim()
-                                    ?.let { right ->
-                                        ignore {
-                                            when (left.removeSuffix(":")
-                                                    .toLowerCase()) {
-                                                "posted" -> datePosted = EX_DATE_FORMAT.parse(right).time
-                                                "visible" -> visible = right.nullIfBlank()
-                                                "language" -> {
-                                                    language = right.removeSuffix(TR_SUFFIX).trim().nullIfBlank()
-                                                    translated = right.endsWith(TR_SUFFIX, true)
-                                                }
-                                                "file size" -> size = parseHumanReadableByteCount(right)?.toLong()
-                                                "length" -> length = right.removeSuffix("pages").trim().nullIfBlank()?.toInt()
-                                                "favorited" -> favorites = right.removeSuffix("times").trim().nullIfBlank()?.toInt()
-                                            }
-                                        }
-                                    }
+                        ?.substringAfterLast('/')
+                        ?.removeSuffix("'")
+
+                uploader = select("#gdn").text().nullIfBlank()?.trim()
+
+                //Parse the table
+                select("#gdd tr").forEach {
+                    val left = it.select(".gdt1").text().nullIfBlank()?.trim()
+                    val rightElement = it.selectFirst(".gdt2")
+                    val right = rightElement.text().nullIfBlank()?.trim()
+                    if(left != null && right != null) {
+                        ignore {
+                            when (left.removeSuffix(":")
+                                    .toLowerCase()) {
+                                "posted" -> datePosted = EX_DATE_FORMAT.parse(right).time
+                                // Example gallery with parent: https://e-hentai.org/g/1390451/7f181c2426/
+                                // Example JP gallery: https://exhentai.org/g/1375385/03519d541b/
+                                // Parent is older variation of the gallery
+                                "parent" -> parent = if (!right.equals("None", true)) {
+                                    rightElement.child(0).attr("href")
+                                } else null
+                                "visible" -> visible = right.nullIfBlank()
+                                "language" -> {
+                                    language = right.removeSuffix(TR_SUFFIX).trim().nullIfBlank()
+                                    translated = right.endsWith(TR_SUFFIX, true)
+                                }
+                                "file size" -> size = parseHumanReadableByteCount(right)?.toLong()
+                                "length" -> length = right.removeSuffix("pages").trim().nullIfBlank()?.toInt()
+                                "favorited" -> favorites = right.removeSuffix("times").trim().nullIfBlank()?.toInt()
+                            }
                         }
-            }
+                    }
+                }
 
-            //Parse ratings
-            ignore {
-                averageRating = select("#rating_label")
-                        .text()
-                        .removePrefix("Average:")
-                        .trim()
-                        .nullIfBlank()
-                        ?.toDouble()
-                ratingCount = select("#rating_count")
-                        .text()
-                        .trim()
-                        .nullIfBlank()
-                        ?.toInt()
-            }
+                lastUpdateCheck = System.currentTimeMillis()
+                if(datePosted != null
+                        && lastUpdateCheck - datePosted!! > EHentaiUpdateWorkerConstants.GALLERY_AGE_TIME) {
+                    aged = true
+                }
 
-            //Parse tags
-            tags.clear()
-            select("#taglist tr").forEach {
-                val namespace = it.select(".tc").text().removeSuffix(":")
-                tags.addAll(it.select("div").map {
-                    Tag(namespace, it.text().trim(), it.hasClass("gtl"))
-                })
+                //Parse ratings
+                ignore {
+                    averageRating = select("#rating_label")
+                            .text()
+                            .removePrefix("Average:")
+                            .trim()
+                            .nullIfBlank()
+                            ?.toDouble()
+                    ratingCount = select("#rating_count")
+                            .text()
+                            .trim()
+                            .nullIfBlank()
+                            ?.toInt()
+                }
+
+                //Parse tags
+                tags.clear()
+                select("#taglist tr").forEach {
+                    val namespace = it.select(".tc").text().removeSuffix(":")
+                    tags.addAll(it.select("div").map { element ->
+                        RaisedTag(
+                                namespace,
+                                element.text().trim(),
+                                if(element.hasClass("gtl"))
+                                    TAG_TYPE_LIGHT
+                                else
+                                    TAG_TYPE_NORMAL
+                        )
+                    })
+                }
+
+                // Add genre as virtual tag
+                genre?.let {
+                    tags.add(RaisedTag(EH_GENRE_NAMESPACE, it, TAG_TYPE_VIRTUAL))
+                }
             }
         }
     }
@@ -392,8 +539,11 @@ class EHentai(override val id: Long,
                 cookies["hath_perks"] = hathPerksCookie
         }
 
-        //Session-less list display mode (for users without ExHentai)
-        cookies["sl"] = "dm_0"
+        // Session-less extended display mode (for users without ExHentai)
+        cookies["sl"] = "dm_2"
+
+        // Ignore all content warnings
+        cookies["nw"] = "1"
 
         return cookies
     }
@@ -431,23 +581,26 @@ class EHentai(override val id: Long,
             ReverseFilter()
     )
 
-    class GenreOption(name: String, val genreId: String): Filter.CheckBox(name, false), UriFilter {
+    class GenreOption(name: String, val genreId: Int): Filter.CheckBox(name, false)
+    class GenreGroup : Filter.Group<GenreOption>("Genres", listOf(
+            GenreOption("Dōjinshi", 2),
+            GenreOption("Manga", 4),
+            GenreOption("Artist CG", 8),
+            GenreOption("Game CG", 16),
+            GenreOption("Western", 512),
+            GenreOption("Non-H", 256),
+            GenreOption("Image Set", 32),
+            GenreOption("Cosplay", 64),
+            GenreOption("Asian Porn", 128),
+            GenreOption("Misc", 1)
+    )), UriFilter {
         override fun addToUri(builder: Uri.Builder) {
-            builder.appendQueryParameter("f_" + genreId, if(state) "1" else "0")
+            val bits = state.fold(0) { acc, genre ->
+                if(!genre.state) acc + genre.genreId else acc
+            }
+            builder.appendQueryParameter("f_cats", bits.toString())
         }
     }
-    class GenreGroup : UriGroup<GenreOption>("Genres", listOf(
-            GenreOption("Dōjinshi", "doujinshi"),
-            GenreOption("Manga", "manga"),
-            GenreOption("Artist CG", "artistcg"),
-            GenreOption("Game CG", "gamecg"),
-            GenreOption("Western", "western"),
-            GenreOption("Non-H", "non-h"),
-            GenreOption("Image Set", "imageset"),
-            GenreOption("Cosplay", "cosplay"),
-            GenreOption("Asian Porn", "asianporn"),
-            GenreOption("Misc", "misc")
-    ))
 
     class AdvancedOption(name: String, val param: String, defValue: Boolean = false): Filter.CheckBox(name, defValue), UriFilter {
         override fun addToUri(builder: Uri.Builder) {
@@ -455,6 +608,21 @@ class EHentai(override val id: Long,
                 builder.appendQueryParameter(param, "on")
         }
     }
+
+    open class PageOption(name: String, private val queryKey: String) : Filter.Text(name), UriFilter {
+        override fun addToUri(builder: Uri.Builder) {
+            if(state.isNotBlank()) {
+                if (builder.build().getQueryParameters("f_sp").isEmpty()) {
+                    builder.appendQueryParameter("f_sp", "on")
+                }
+
+                builder.appendQueryParameter(queryKey, state.trim())
+            }
+        }
+    }
+    class MinPagesOption : PageOption("Minimum Pages", "f_spf")
+    class MaxPagesOption : PageOption("Maximum Pages", "f_spt")
+
     class RatingOption : Filter.Select<String>("Minimum Rating", arrayOf(
             "Any",
             "2 stars",
@@ -463,7 +631,10 @@ class EHentai(override val id: Long,
             "5 stars"
     )), UriFilter {
         override fun addToUri(builder: Uri.Builder) {
-            if(state > 0) builder.appendQueryParameter("f_srdd", Integer.toString(state + 1))
+            if(state > 0) {
+                builder.appendQueryParameter("f_srdd", Integer.toString(state + 1))
+                builder.appendQueryParameter("f_sr", "on")
+            }
         }
     }
 
@@ -476,7 +647,9 @@ class EHentai(override val id: Long,
             AdvancedOption("Search Low-Power Tags", "f_sdt1"),
             AdvancedOption("Search Downvoted Tags", "f_sdt2"),
             AdvancedOption("Show Expunged Galleries", "f_sh"),
-            RatingOption()
+            RatingOption(),
+            MinPagesOption(),
+            MaxPagesOption()
     ))
 
     class ReverseFilter : Filter.CheckBox("Reverse search results")
@@ -486,13 +659,81 @@ class EHentai(override val id: Long,
     else
         "E-Hentai"
 
-    override fun queryAll() = ExGalleryMetadata.EmptyQuery()
-    override fun queryFromUrl(url: String) = ExGalleryMetadata.UrlQuery(url, exh)
+    class GalleryNotFoundException(cause: Throwable): RuntimeException("Gallery not found!", cause)
+
+     // === URL IMPORT STUFF
+
+    override val matchingHosts: List<String> = if(exh) listOf(
+            "exhentai.org"
+    ) else listOf(
+            "g.e-hentai.org",
+            "e-hentai.org"
+    )
+
+    override fun mapUrlToMangaUrl(uri: Uri): String? {
+        return when (uri.pathSegments.firstOrNull()) {
+            "g" -> {
+                //Is already gallery page, do nothing
+                uri.toString()
+            }
+            "s" -> {
+                //Is page, fetch gallery token and use that
+                getGalleryUrlFromPage(uri)
+            }
+            else -> null
+        }
+    }
+
+    override fun cleanMangaUrl(url: String): String {
+        return EHentaiSearchMetadata.normalizeUrl(super.cleanMangaUrl(url))
+    }
+
+    private fun getGalleryUrlFromPage(uri: Uri): String {
+        val lastSplit = uri.pathSegments.last().split("-")
+        val pageNum = lastSplit.last()
+        val gallery = lastSplit.first()
+        val pageToken = uri.pathSegments.elementAt(1)
+
+        val json = JsonObject()
+        json["method"] = "gtoken"
+        json["pagelist"] = JsonArray().apply {
+            add(JsonArray().apply {
+                add(gallery.toInt())
+                add(pageToken)
+                add(pageNum.toInt())
+            })
+        }
+
+        val outJson = JsonParser().parse(client.newCall(Request.Builder()
+                .url(EH_API_BASE)
+                .post(RequestBody.create(JSON, json.toString()))
+                .build()).execute().body()!!.string()).obj
+
+        val obj = outJson["tokenlist"].array.first()
+        return "${uri.scheme}://${uri.host}/g/${obj["gid"].int}/${obj["token"].string}/"
+    }
+
 
     companion object {
-        val QUERY_PREFIX = "?f_apply=Apply+Filter"
-        val TR_SUFFIX = "TR"
-        val REVERSE_PARAM = "TEH_REVERSE"
+        private const val QUERY_PREFIX = "?f_apply=Apply+Filter"
+        private const val TR_SUFFIX = "TR"
+        private const val REVERSE_PARAM = "TEH_REVERSE"
+
+        private const val EH_API_BASE = "https://api.e-hentai.org/api.php"
+        private val JSON = MediaType.parse("application/json; charset=utf-8")!!
+
+        private val FAVORITES_BORDER_HEX_COLORS = listOf(
+                "000",
+                "f00",
+                "fa0",
+                "dd0",
+                "080",
+                "9f4",
+                "4bf",
+                "00f",
+                "508",
+                "e8e"
+        )
 
         fun buildCookies(cookies: Map<String, String>)
                 = cookies.entries.joinToString(separator = "; ") {

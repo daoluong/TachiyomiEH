@@ -1,17 +1,21 @@
 package eu.kanade.tachiyomi.ui.catalogue.global_search
 
+import android.support.v7.widget.RecyclerView
 import android.view.View
 import eu.davidea.flexibleadapter.FlexibleAdapter
 import eu.davidea.flexibleadapter.items.AbstractFlexibleItem
+import eu.davidea.flexibleadapter.items.IFlexible
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.source.CatalogueSource
 
 /**
  * Item that contains search result information.
  *
- * @param source contains information about search result.
+ * @param source the source for the search results.
+ * @param results the search results.
+ * @param highlighted whether this search item should be highlighted/marked in the catalogue search view.
  */
-class CatalogueSearchItem(val source: CatalogueSource, val results: List<CatalogueSearchCardItem>?)
+class CatalogueSearchItem(val source: CatalogueSource, val results: List<CatalogueSearchCardItem>?, val highlighted: Boolean = false)
     : AbstractFlexibleItem<CatalogueSearchHolder>() {
 
     /**
@@ -28,14 +32,14 @@ class CatalogueSearchItem(val source: CatalogueSource, val results: List<Catalog
      *
      * @return holder of view.
      */
-    override fun createViewHolder(view: View, adapter: FlexibleAdapter<*>): CatalogueSearchHolder {
+    override fun createViewHolder(view: View, adapter: FlexibleAdapter<IFlexible<RecyclerView.ViewHolder>>): CatalogueSearchHolder {
         return CatalogueSearchHolder(view, adapter as CatalogueSearchAdapter)
     }
 
     /**
      * Bind item to view.
      */
-    override fun bindViewHolder(adapter: FlexibleAdapter<*>, holder: CatalogueSearchHolder,
+    override fun bindViewHolder(adapter: FlexibleAdapter<IFlexible<RecyclerView.ViewHolder>>, holder: CatalogueSearchHolder,
                                 position: Int, payloads: List<Any?>?) {
         holder.bind(this)
     }

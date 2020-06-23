@@ -1,11 +1,8 @@
 package eu.kanade.tachiyomi.data.library
 
-import android.app.Notification
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -18,6 +15,7 @@ import eu.kanade.tachiyomi.data.database.models.LibraryManga
 import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.DownloadService
+import eu.kanade.tachiyomi.data.library.LibraryUpdateRanker.rankingScheme
 import eu.kanade.tachiyomi.data.library.LibraryUpdateService.Companion.start
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
 import eu.kanade.tachiyomi.data.notification.Notifications
@@ -27,8 +25,8 @@ import eu.kanade.tachiyomi.data.track.TrackManager
 import eu.kanade.tachiyomi.source.SourceManager
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.util.*
+import exh.LIBRARY_UPDATE_EXCLUDED_SOURCES
 import rx.Observable
 import rx.Subscription
 import rx.schedulers.Schedulers
@@ -71,12 +69,7 @@ class LibraryUpdateService(
         NotificationReceiver.cancelLibraryUpdatePendingBroadcast(this)
     }
 
-    /**
-     * Bitmap of the app for notifications.
-     */
-    private val notificationBitmap by lazy {
-        BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher)
-    }
+    private val updateNotifier by lazy { LibraryUpdateNotifier(this) }
 
     /**
      * Cached progress notification to avoid creating a lot.
@@ -84,7 +77,7 @@ class LibraryUpdateService(
     private val progressNotification by lazy { NotificationCompat.Builder(this, Notifications.CHANNEL_LIBRARY)
             .setContentTitle(getString(R.string.app_name))
             .setSmallIcon(R.drawable.ic_refresh_white_24dp_img)
-            .setLargeIcon(notificationBitmap)
+            .setLargeIcon(updateNotifier.notificationBitmap)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .addAction(R.drawable.ic_clear_grey_24dp_img, getString(android.R.string.cancel), cancelIntent)
@@ -204,7 +197,9 @@ class LibraryUpdateService(
         // Update favorite manga. Destroy service when completed or in case of an error.
         subscription = Observable
                 .defer {
+                    val selectedScheme = preferences.libraryUpdatePrioritization().getOrDefault()
                     val mangaList = getMangaToUpdate(intent, target)
+                            .sortedWith(rankingScheme[selectedScheme])
 
                     // Update either chapter list or manga details.
                     when (target) {
@@ -283,24 +278,29 @@ class LibraryUpdateService(
                 .doOnNext { showProgressNotification(it, count.andIncrement, mangaToUpdate.size) }
                 // Update the chapters of the manga.
                 .concatMap { manga ->
-                    updateManga(manga)
-                            // If there's any error, return empty update and continue.
-                            .onErrorReturn {
-                                failedUpdates.add(manga)
-                                Pair(emptyList(), emptyList())
-                            }
-                            // Filter out mangas without new chapters (or failed).
-                            .filter { pair -> pair.first.isNotEmpty() }
-                            .doOnNext {
-                                if (downloadNew && (categoriesToDownload.isEmpty() ||
-                                        manga.category in categoriesToDownload)) {
-
-                                    downloadChapters(manga, it.first)
-                                    hasDownloads = true
+                    if(manga.source in LIBRARY_UPDATE_EXCLUDED_SOURCES) {
+                        // Ignore EXH manga, updating chapters for every manga will get you banned
+                        Observable.empty()
+                    } else {
+                        updateManga(manga)
+                                // If there's any error, return empty update and continue.
+                                .onErrorReturn {
+                                    failedUpdates.add(manga)
+                                    Pair(emptyList(), emptyList())
                                 }
-                            }
-                            // Convert to the manga that contains new chapters.
-                            .map { manga }
+                                // Filter out mangas without new chapters (or failed).
+                                .filter { pair -> pair.first.isNotEmpty() }
+                                .doOnNext {
+                                    if (downloadNew && (categoriesToDownload.isEmpty() ||
+                                                    manga.category in categoriesToDownload)) {
+
+                                        downloadChapters(manga, it.first)
+                                        hasDownloads = true
+                                    }
+                                }
+                                // Convert to the manga that contains new chapters.
+                                .map { manga }
+                    }
                 }
                 // Add manga with new chapters to the list.
                 .doOnNext { manga ->
@@ -310,7 +310,7 @@ class LibraryUpdateService(
                 // Notify result of the overall update.
                 .doOnCompleted {
                     if (newUpdates.isNotEmpty()) {
-                        showResultNotification(newUpdates)
+                        updateNotifier.showResultNotification(newUpdates)
                         if (downloadNew && hasDownloads) {
                             DownloadService.start(this)
                         }
@@ -431,59 +431,9 @@ class LibraryUpdateService(
     }
 
     /**
-     * Shows the notification containing the result of the update done by the service.
-     *
-     * @param updates a list of manga with new updates.
-     */
-    private fun showResultNotification(updates: List<Manga>) {
-        val newUpdates = updates.map { it.title.chop(45) }.toMutableSet()
-
-        // Append new chapters from a previous, existing notification
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val previousNotification = notificationManager.activeNotifications
-                    .find { it.id == Notifications.ID_LIBRARY_RESULT }
-
-            if (previousNotification != null) {
-                val oldUpdates = previousNotification.notification.extras
-                        .getString(Notification.EXTRA_BIG_TEXT)
-
-                if (!oldUpdates.isNullOrEmpty()) {
-                    newUpdates += oldUpdates.split("\n")
-                }
-            }
-        }
-
-        notificationManager.notify(Notifications.ID_LIBRARY_RESULT, notification(Notifications.CHANNEL_LIBRARY) {
-            setSmallIcon(R.drawable.ic_book_white_24dp)
-            setLargeIcon(notificationBitmap)
-            setContentTitle(getString(R.string.notification_new_chapters))
-            if (newUpdates.size > 1) {
-                setContentText(getString(R.string.notification_new_chapters_text, newUpdates.size))
-                setStyle(NotificationCompat.BigTextStyle().bigText(newUpdates.joinToString("\n")))
-            } else {
-                setContentText(newUpdates.first())
-            }
-            priority = NotificationCompat.PRIORITY_HIGH
-            setContentIntent(getNotificationIntent())
-            setAutoCancel(true)
-        })
-    }
-
-    /**
      * Cancels the progress notification.
      */
     private fun cancelProgressNotification() {
         notificationManager.cancel(Notifications.ID_LIBRARY_PROGRESS)
     }
-
-    /**
-     * Returns an intent to open the main activity.
-     */
-    private fun getNotificationIntent(): PendingIntent {
-        val intent = Intent(this, MainActivity::class.java)
-        intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-        intent.action = MainActivity.SHORTCUT_RECENTLY_UPDATED
-        return PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
-    }
-
 }

@@ -8,10 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.support.customtabs.CustomTabsIntent
 import android.support.v4.content.pm.ShortcutInfoCompat
 import android.support.v4.content.pm.ShortcutManagerCompat
 import android.support.v4.graphics.drawable.IconCompat
@@ -22,6 +20,9 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.resource.bitmap.RoundedCorners
 import com.bumptech.glide.request.target.SimpleTarget
 import com.bumptech.glide.request.transition.Transition
+import com.bumptech.glide.signature.ObjectKey
+import com.elvishew.xlog.XLog
+import com.google.gson.Gson
 import com.jakewharton.rxbinding.support.v4.widget.refreshes
 import com.jakewharton.rxbinding.view.clicks
 import com.jakewharton.rxbinding.view.longClicks
@@ -36,27 +37,30 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceManager
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.online.all.MergedSource
 import eu.kanade.tachiyomi.ui.base.controller.DialogController
 import eu.kanade.tachiyomi.ui.base.controller.NucleusController
 import eu.kanade.tachiyomi.ui.base.controller.withFadeTransaction
+import eu.kanade.tachiyomi.ui.catalogue.CatalogueController
 import eu.kanade.tachiyomi.ui.catalogue.global_search.CatalogueSearchController
 import eu.kanade.tachiyomi.ui.library.ChangeMangaCategoriesDialog
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.manga.MangaController
-import eu.kanade.tachiyomi.util.getResourceColor
-import eu.kanade.tachiyomi.util.snack
-import eu.kanade.tachiyomi.util.toast
-import eu.kanade.tachiyomi.util.truncateCenter
+import eu.kanade.tachiyomi.util.*
 import exh.EH_SOURCE_ID
 import exh.EXH_SOURCE_ID
+import exh.MERGED_SOURCE_ID
+import exh.NHENTAI_SOURCE_ID
 import exh.ui.webview.WebViewActivity
 import jp.wasabeef.glide.transformations.CropSquareTransformation
 import jp.wasabeef.glide.transformations.MaskTransformation
 import kotlinx.android.synthetic.main.manga_info_controller.*
+import kotlinx.coroutines.*
 import uy.kohesive.injekt.injectLazy
 import java.text.DateFormat
 import java.text.DecimalFormat
 import java.util.*
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Fragment that shows manga information.
@@ -64,14 +68,24 @@ import java.util.*
  * UI related actions should be called from here.
  */
 class MangaInfoController : NucleusController<MangaInfoPresenter>(),
-        ChangeMangaCategoriesDialog.Listener {
+        ChangeMangaCategoriesDialog.Listener, CoroutineScope {
 
     /**
      * Preferences helper.
      */
     private val preferences: PreferencesHelper by injectLazy()
 
+    // EXH -->
+    private var lastMangaThumbnail: String? = null
+
+    private val smartSearchConfig get() = (parentController as MangaController).smartSearchConfig
+
+    override val coroutineContext: CoroutineContext = Job() + Dispatchers.Main
+
+    private val gson: Gson by injectLazy()
+
     private val sourceManager: SourceManager by injectLazy()
+    // EXH <--
 
     init {
         setHasOptionsMenu(true)
@@ -80,7 +94,7 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
 
     override fun createPresenter(): MangaInfoPresenter {
         val ctrl = parentController as MangaController
-        return MangaInfoPresenter(ctrl.manga!!, ctrl.source!!,
+        return MangaInfoPresenter(ctrl.manga!!, ctrl.source!!, ctrl.smartSearchConfig,
                 ctrl.chapterCountRelay, ctrl.lastUpdateRelay, ctrl.mangaFavoriteRelay)
     }
 
@@ -93,7 +107,9 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
 
         // Set onclickListener to toggle favorite when FAB clicked.
         fab_favorite.clicks().subscribeUntilDestroy { onFabClick() }
-        fab_favorite.longClicks().subscribeUntilDestroy { onFabLongClick() }
+
+        // Set onLongClickListener to manage categories when FAB is clicked.
+        fab_favorite.longClicks().subscribeUntilDestroy{ onFabLongClick() }
 
         // Set SwipeRefresh to refresh manga data.
         swipe_refresh.refreshes().subscribeUntilDestroy { fetchMangaFromSource() }
@@ -137,9 +153,9 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
         manga_genres_tags.setOnTagClickListener { tag ->
             //EXH Special case E-Hentai/ExHentai to use tag based search
             var text = tag
-            if(isEHentaiBasedSource()) {
+            if(isEHentaiBasedSource() || presenter.source.id == NHENTAI_SOURCE_ID) {
                 val parsed = parseTag(text)
-                text = wrapTag(parsed.first, parsed.second)
+                text = wrapTag(parsed.first, parsed.second.substringBefore('|').trim())
             }
             performGlobalSearch(text)
         }
@@ -148,6 +164,34 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
             copyToClipboard(view.context.getString(R.string.title), presenter.manga.title)
         }
 
+        // EXH -->
+        smartSearchConfig?.let { smartSearchConfig ->
+            smartsearch_buttons.visible()
+
+            smartsearch_merge_btn.clicks().subscribeUntilDestroy {
+                // Init presenter here to avoid threading issues
+                presenter
+
+                launch {
+                    try {
+                        val mergedManga = withContext(Dispatchers.IO + NonCancellable) {
+                            presenter.smartSearchMerge(presenter.manga, smartSearchConfig.origMangaId)
+                        }
+
+                        parentController?.router?.pushController(MangaController(mergedManga,
+                                true,
+                                update = true).withFadeTransaction())
+                        applicationContext?.toast("Manga merged!")
+                    } catch(e: Exception) {
+                        if(e is CancellationException) throw e
+                        else {
+                            applicationContext?.toast("Failed to merge manga: ${e.message}")
+                        }
+                    }
+                }
+            }
+        }
+        // EXH <--
     }
 
     override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
@@ -156,13 +200,28 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
+            // EXH -->
+//            R.id.action_smart_search -> openSmartSearch()
+            // EXH <--
             R.id.action_open_in_browser -> openInBrowser()
+            R.id.action_open_in_web_view -> openInWebView()
             R.id.action_share -> shareManga()
             R.id.action_add_to_home_screen -> addToHomeScreen()
             else -> return super.onOptionsItemSelected(item)
         }
         return true
     }
+
+
+    // EXH -->
+    private fun openSmartSearch() {
+        val smartSearchConfig = CatalogueController.SmartSearchConfig(presenter.manga.title, presenter.manga.id!!)
+
+        parentController?.router?.pushController(CatalogueController(Bundle().apply {
+            putParcelable(CatalogueController.SMART_SEARCH_CONFIG, smartSearchConfig)
+        }).withFadeTransaction())
+    }
+    // EXH <--
 
     /**
      * Check if manga is initialized.
@@ -177,6 +236,7 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
             // Update view.
             setMangaInfo(manga, source)
 
+            if((parentController as MangaController).update) fetchMangaFromSource()
         } else {
             // Initialize manga.
             fetchMangaFromSource()
@@ -191,6 +251,8 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
      */
     private fun setMangaInfo(manga: Manga, source: Source?) {
         val view = view ?: return
+
+        // TODO Duplicated in MigrationProcedureAdapter
 
         //update full title TextView.
         manga_full_title.text = if (manga.title.isBlank()) {
@@ -216,9 +278,23 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
         // If manga source is known update source TextView.
         manga_source.text = if (source == null) {
             view.context.getString(R.string.unknown)
+            // EXH -->
+        } else if(source.id == MERGED_SOURCE_ID) {
+            MergedSource.MangaConfig.readFromUrl(gson, manga.url).children.map {
+                sourceManager.getOrStub(it.source).toString()
+            }.distinct().joinToString()
+            // EXH <--
         } else {
             source.toString()
         }
+
+        // EXH -->
+        if(source?.id == MERGED_SOURCE_ID) {
+            manga_source_label.text = "Sources"
+        } else {
+            manga_source_label.setText(R.string.manga_info_source_label)
+        }
+        // EXH <--
 
         // Update genres list
         if (manga.genre.isNullOrBlank().not()) {
@@ -243,10 +319,17 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
         // Set the favorite drawable to the correct one.
         setFavoriteDrawable(manga.favorite)
 
-        // Set cover if it wasn't already.
-        if (manga_cover.drawable == null && !manga.thumbnail_url.isNullOrEmpty()) {
+        // Set cover if it matches
+        val tagMatches = lastMangaThumbnail == manga.thumbnail_url
+        val coverLoaded = manga_cover.drawable != null
+        if ((!tagMatches || !coverLoaded) && !manga.thumbnail_url.isNullOrEmpty()) {
+            lastMangaThumbnail = manga.thumbnail_url
+
+            val coverSig = ObjectKey(manga.thumbnail_url ?: "")
+
             GlideApp.with(view.context)
                     .load(manga)
+                    .signature(coverSig)
                     .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
                     .centerCrop()
                     .into(manga_cover)
@@ -254,6 +337,7 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
             if (backdrop != null) {
                 GlideApp.with(view.context)
                         .load(manga)
+                        .signature(coverSig)
                         .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
                         .centerCrop()
                         .into(backdrop)
@@ -265,6 +349,13 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
         manga_genres_tags.setOnTagClickListener(null)
         super.onDestroyView(view)
     }
+
+    // EXH -->
+    override fun onDestroy() {
+        super.onDestroy()
+        cancel()
+    }
+    // EXH <--
 
     /**
      * Update chapter count TextView.
@@ -318,16 +409,25 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
                     putExtra(WebViewActivity.KEY_URL, urlString)
                 })
             } else {
-                val url = Uri.parse(urlString)
-                val intent = CustomTabsIntent.Builder()
-                        .setToolbarColor(context.getResourceColor(R.attr.colorPrimary))
-                        .build()
-                intent.launchUrl(activity, url)
+                context.openInBrowser(source.mangaDetailsRequest(presenter.manga).url().toString())
             }
             // <-- EH
         } catch (e: Exception) {
             context.toast(e.message)
         }
+    }
+
+    private fun openInWebView() {
+        val source = presenter.source as? HttpSource ?: return
+
+        val url = try {
+            source.mangaDetailsRequest(presenter.manga).url().toString()
+        } catch (e: Exception) {
+            return
+        }
+
+        parentController?.router?.pushController(MangaWebViewController(source.id, url)
+            .withFadeTransaction())
     }
 
     /**
@@ -383,8 +483,17 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
     /**
      * Update swipe refresh to start showing refresh in progress spinner.
      */
-    fun onFetchMangaError() {
+    fun onFetchMangaError(error: Throwable) {
         setRefreshing(false)
+        activity?.toast(error.message)
+
+        // [EXH]
+        XLog.w("> Failed to fetch manga details!", error)
+        XLog.w("> (source.id: %s, source.name: %s, manga.id: %s, manga.url: %s)",
+                presenter.source.id,
+                presenter.source.name,
+                presenter.manga.id,
+                presenter.manga.url)
     }
 
     /**
@@ -409,7 +518,15 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
                 defaultCategory != null -> presenter.moveMangaToCategory(manga, defaultCategory)
                 categories.size <= 1 -> // default or the one from the user
                     presenter.moveMangaToCategory(manga, categories.firstOrNull())
-                else -> askCategories(manga, categories)
+                else -> {
+                    val ids = presenter.getMangaCategoryIds(manga)
+                    val preselected = ids.mapNotNull { id ->
+                        categories.indexOfFirst { it.id == id }.takeIf { it != -1 }
+                    }.toTypedArray()
+
+                    ChangeMangaCategoriesDialog(this, listOf(manga), categories, preselected)
+                            .showDialog(router)
+                }
             }
             activity?.toast(activity?.getString(R.string.manga_added_library))
         } else {
@@ -417,25 +534,28 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
         }
     }
 
+    /**
+     * Called when the fab is long clicked.
+     */
     private fun onFabLongClick() {
-        if(preferences.eh_askCategoryOnLongPress().getOrDefault()) {
-            val manga = presenter.manga
-            if(!manga.favorite) toggleFavorite()
-            val categories = presenter.getCategories()
-            if(categories.size > 1) {
-                askCategories(manga, categories)
-            }
+        val manga = presenter.manga
+        if (!manga.favorite) {
+            toggleFavorite()
+            activity?.toast(activity?.getString(R.string.manga_added_library))
         }
-    }
+        val categories = presenter.getCategories()
+        if (categories.size <= 1) {
+            // default or the one from the user then just add to favorite.
+            presenter.moveMangaToCategory(manga, categories.firstOrNull())
+        } else {
+            val ids = presenter.getMangaCategoryIds(manga)
+            val preselected = ids.mapNotNull { id ->
+                categories.indexOfFirst { it.id == id }.takeIf { it != -1 }
+            }.toTypedArray()
 
-    private fun askCategories(manga: Manga, categories: List<Category>) {
-        val ids = presenter.getMangaCategoryIds(manga)
-        val preselected = ids.mapNotNull { id ->
-            categories.indexOfFirst { it.id == id }.takeIf { it != -1 }
-        }.toTypedArray()
-
-        ChangeMangaCategoriesDialog(this, listOf(manga), categories, preselected)
-                .showDialog(router)
+            ChangeMangaCategoriesDialog(this, listOf(manga), categories, preselected)
+                    .showDialog(router)
+        }
     }
 
     override fun updateCategoriesForMangas(mangas: List<Manga>, categories: List<Category>) {
@@ -551,19 +671,9 @@ class MangaInfoController : NucleusController<MangaInfoPresenter>(),
     private fun parseTag(tag: String) = tag.substringBefore(':').trim() to tag.substringAfter(':').trim()
 
     private fun isEHentaiBasedSource(): Boolean {
-        val mangaSourceText = manga_source.text
-
-        sourceManager.get(EH_SOURCE_ID)?.let {
-            if(mangaSourceText.startsWith(it.name))
-                return true
-        }
-
-        sourceManager.get(EXH_SOURCE_ID)?.let {
-            if(mangaSourceText.startsWith(it.name))
-                return true
-        }
-
-        return false
+        val sourceId = presenter.source.id
+        return sourceId == EH_SOURCE_ID
+                || sourceId == EXH_SOURCE_ID
     }
     // <-- EH
 

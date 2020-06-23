@@ -4,6 +4,7 @@ import android.content.Context
 import android.support.v7.widget.LinearLayoutManager
 import android.support.v7.widget.RecyclerView
 import android.util.AttributeSet
+import android.view.View
 import android.widget.FrameLayout
 import eu.davidea.flexibleadapter.FlexibleAdapter
 import eu.davidea.flexibleadapter.SelectableAdapter
@@ -17,7 +18,9 @@ import eu.kanade.tachiyomi.util.inflate
 import eu.kanade.tachiyomi.util.plusAssign
 import eu.kanade.tachiyomi.util.toast
 import eu.kanade.tachiyomi.widget.AutofitRecyclerView
+import exh.ui.LoadingHandle
 import kotlinx.android.synthetic.main.library_category.view.*
+import kotlinx.coroutines.*
 import rx.android.schedulers.AndroidSchedulers
 import rx.subscriptions.CompositeSubscription
 import uy.kohesive.injekt.injectLazy
@@ -61,6 +64,15 @@ class LibraryCategoryView @JvmOverloads constructor(context: Context, attrs: Att
      * Subscriptions while the view is bound.
      */
     private var subscriptions = CompositeSubscription()
+
+    // EXH -->
+    private var initialLoadHandle: LoadingHandle? = null
+    lateinit var scope: CoroutineScope
+
+    private fun newScope() = object : CoroutineScope {
+        override val coroutineContext = SupervisorJob() + Dispatchers.Main
+    }
+    // EXH <--
 
     fun onCreate(controller: LibraryController) {
         this.controller = controller
@@ -111,28 +123,72 @@ class LibraryCategoryView @JvmOverloads constructor(context: Context, attrs: Att
             SelectableAdapter.Mode.SINGLE
         }
 
+        // EXH -->
+        scope = newScope()
+        initialLoadHandle = controller.loaderManager.openProgressBar()
+        // EXH <--
+
         subscriptions += controller.searchRelay
                 .doOnNext { adapter.searchText = it }
                 .skip(1)
-                .debounce(350, TimeUnit.MILLISECONDS)
+                .debounce(500, TimeUnit.MILLISECONDS)
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe { adapter.performFilter() }
+                .subscribe {
+                    // EXH -->
+                    scope.launch {
+                        val handle = controller.loaderManager.openProgressBar()
+                        try {
+                            // EXH <--
+                            adapter.performFilter(this)
+                            // EXH -->
+                        } finally {
+                            controller.loaderManager.closeProgressBar(handle)
+                        }
+                    }
+                    // EXH <--
+                }
 
         subscriptions += controller.libraryMangaRelay
-                .subscribe { onNextLibraryManga(it) }
+                .subscribe {
+                    // EXH -->
+                    scope.launch {
+                        try {
+                            // EXH <--
+                            onNextLibraryManga(this, it)
+                            // EXH -->
+                        } finally {
+                            controller.loaderManager.closeProgressBar(initialLoadHandle)
+                        }
+                    }
+                    // EXH <--
+                }
 
         subscriptions += controller.selectionRelay
                 .subscribe { onSelectionChanged(it) }
+
+        subscriptions += controller.selectAllRelay
+                .subscribe {
+                    if (it == category.id) {
+                        adapter.currentItems.forEach { item ->
+                            controller.setSelection(item.manga, true)
+                        }
+                        controller.invalidateActionMode()
+                    }
+                }
     }
 
     fun onRecycle() {
-        adapter.setItems(emptyList())
+        runBlocking { adapter.setItems(this, emptyList()) }
         adapter.clearSelection()
         unsubscribe()
     }
 
     fun unsubscribe() {
         subscriptions.clear()
+        // EXH -->
+        scope.cancel()
+        controller.loaderManager.closeProgressBar(initialLoadHandle)
+        // EXH <--
     }
 
     /**
@@ -141,12 +197,14 @@ class LibraryCategoryView @JvmOverloads constructor(context: Context, attrs: Att
      *
      * @param event the event received.
      */
-    fun onNextLibraryManga(event: LibraryMangaEvent) {
+    suspend fun onNextLibraryManga(cScope: CoroutineScope, event: LibraryMangaEvent) {
         // Get the manga list for this category.
         val mangaForCategory = event.getMangaForCategory(category).orEmpty()
 
         // Update the category with its manga.
-        adapter.setItems(mangaForCategory)
+        // EXH -->
+        adapter.setItems(cScope, mangaForCategory)
+        // EXH <--
 
         if (adapter.mode == SelectableAdapter.Mode.MULTI) {
             controller.selectedMangas.forEach { manga ->
@@ -205,7 +263,7 @@ class LibraryCategoryView @JvmOverloads constructor(context: Context, attrs: Att
      * @param position the position of the element clicked.
      * @return true if the item should be selected, false otherwise.
      */
-    override fun onItemClick(position: Int): Boolean {
+    override fun onItemClick(view: View, position: Int): Boolean {
         // If the action mode is created and the position is valid, toggle the selection.
         val item = adapter.getItem(position) ?: return false
         if (adapter.mode == SelectableAdapter.Mode.MULTI) {

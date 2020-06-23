@@ -25,7 +25,9 @@ import eu.kanade.tachiyomi.source.SourceManager
 import eu.kanade.tachiyomi.ui.base.controller.RxController
 import eu.kanade.tachiyomi.ui.base.controller.TabbedController
 import eu.kanade.tachiyomi.ui.base.controller.requestPermissionsSafe
+import eu.kanade.tachiyomi.ui.catalogue.CatalogueController
 import eu.kanade.tachiyomi.ui.manga.chapter.ChaptersController
+import eu.kanade.tachiyomi.ui.manga.chapter.ChaptersPresenter
 import eu.kanade.tachiyomi.ui.manga.info.MangaInfoController
 import eu.kanade.tachiyomi.ui.manga.track.TrackController
 import eu.kanade.tachiyomi.util.toast
@@ -38,15 +40,32 @@ import java.util.Date
 
 class MangaController : RxController, TabbedController {
 
-    constructor(manga: Manga?, fromCatalogue: Boolean = false) : super(Bundle().apply {
+    constructor(manga: Manga?,
+                fromCatalogue: Boolean = false,
+                smartSearchConfig: CatalogueController.SmartSearchConfig? = null,
+                update: Boolean = false) : super(Bundle().apply {
         putLong(MANGA_EXTRA, manga?.id ?: 0)
         putBoolean(FROM_CATALOGUE_EXTRA, fromCatalogue)
+        putParcelable(SMART_SEARCH_CONFIG_EXTRA, smartSearchConfig)
+        putBoolean(UPDATE_EXTRA, update)
     }) {
         this.manga = manga
         if (manga != null) {
             source = Injekt.get<SourceManager>().getOrStub(manga.source)
         }
     }
+
+    // EXH -->
+    constructor(redirect: ChaptersPresenter.EXHRedirect) : super(Bundle().apply {
+        putLong(MANGA_EXTRA, redirect.manga.id!!)
+        putBoolean(UPDATE_EXTRA, redirect.update)
+    }) {
+        this.manga = redirect.manga
+        if (manga != null) {
+            source = Injekt.get<SourceManager>().getOrStub(redirect.manga.source)
+        }
+    }
+    // EXH <--
 
     constructor(mangaId: Long) : this(
             Injekt.get<DatabaseHelper>().getManga(mangaId).executeAsBlocking())
@@ -63,6 +82,12 @@ class MangaController : RxController, TabbedController {
     private var adapter: MangaDetailAdapter? = null
 
     val fromCatalogue = args.getBoolean(FROM_CATALOGUE_EXTRA, false)
+
+    var update = args.getBoolean(UPDATE_EXTRA, false)
+
+    // EXH -->
+    val smartSearchConfig: CatalogueController.SmartSearchConfig? = args.getParcelable(SMART_SEARCH_CONFIG_EXTRA)
+    // EXH <--
 
     val lastUpdateRelay: BehaviorRelay<Date> = BehaviorRelay.create()
 
@@ -180,6 +205,10 @@ class MangaController : RxController, TabbedController {
 
     companion object {
 
+        // EXH -->
+        const val UPDATE_EXTRA = "update"
+        const val SMART_SEARCH_CONFIG_EXTRA = "smartSearchConfig"
+        // EXH <--
         const val FROM_CATALOGUE_EXTRA = "from_catalogue"
         const val MANGA_EXTRA = "manga"
 
@@ -187,7 +216,7 @@ class MangaController : RxController, TabbedController {
         const val CHAPTERS_CONTROLLER = 1
         const val TRACK_CONTROLLER = 2
 
-        private val tabField = TabLayout.Tab::class.java.getDeclaredField("mView")
+        private val tabField = TabLayout.Tab::class.java.getDeclaredField("view")
                 .apply { isAccessible = true }
     }
 

@@ -2,7 +2,9 @@ package exh.favorites
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.PowerManager
+import com.elvishew.xlog.XLog
 import eu.kanade.tachiyomi.data.database.DatabaseHelper
 import eu.kanade.tachiyomi.data.database.models.Category
 import eu.kanade.tachiyomi.data.database.models.Manga
@@ -15,16 +17,14 @@ import eu.kanade.tachiyomi.util.launchUI
 import eu.kanade.tachiyomi.util.powerManager
 import eu.kanade.tachiyomi.util.toast
 import eu.kanade.tachiyomi.util.wifiManager
-import exh.EH_METADATA_SOURCE_ID
-import exh.EXH_SOURCE_ID
-import exh.GalleryAddEvent
-import exh.GalleryAdder
+import exh.*
+import exh.eh.EHentaiThrottleManager
+import exh.eh.EHentaiUpdateWorker
 import exh.util.ignore
 import exh.util.trans
 import okhttp3.FormBody
 import okhttp3.Request
 import rx.subjects.BehaviorSubject
-import timber.log.Timber
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
@@ -44,11 +44,12 @@ class FavoritesSyncHelper(val context: Context) {
 
     private val galleryAdder = GalleryAdder()
 
-    private var lastThrottleTime: Long = 0
-    private var throttleTime: Long = 0
+    private val throttleManager = EHentaiThrottleManager()
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+
+    private val logger = XLog.tag("EHFavSync").build()
 
     val status = BehaviorSubject.create<FavoritesSyncStatus>(FavoritesSyncStatus.Idle())
 
@@ -70,13 +71,31 @@ class FavoritesSyncHelper(val context: Context) {
             return
         }
 
+        // Validate library state
+        status.onNext(FavoritesSyncStatus.Processing("Verifying local library"))
+        val libraryManga = db.getLibraryMangas().executeAsBlocking()
+        val seenManga = HashSet<Long>(libraryManga.size)
+        libraryManga.forEach {
+            if(it.source != EXH_SOURCE_ID && it.source != EH_SOURCE_ID) return@forEach
+
+            if(it.id in seenManga) {
+                val inCategories = db.getCategoriesForManga(it).executeAsBlocking()
+                status.onNext(FavoritesSyncStatus.BadLibraryState
+                        .MangaInMultipleCategories(it, inCategories))
+                logger.w("Manga %s is in multiple categories!", it.id)
+                return
+            } else {
+                seenManga += it.id!!
+            }
+        }
+
         //Download remote favorites
         val favorites = try {
             status.onNext(FavoritesSyncStatus.Processing("Downloading favorites from remote server"))
             exh.fetchFavorites()
         } catch(e: Exception) {
             status.onNext(FavoritesSyncStatus.Error("Failed to fetch favorites from remote server!"))
-            Timber.e(e, "Could not fetch favorites!")
+            logger.e( "Could not fetch favorites!", e)
             return
         }
 
@@ -87,12 +106,17 @@ class FavoritesSyncHelper(val context: Context) {
             ignore { wakeLock?.release() }
             wakeLock = ignore {
                 context.powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
-                        "ExhFavoritesSyncWakelock")
+                        "teh:ExhFavoritesSyncWakelock")
             }
             ignore { wifiLock?.release() }
             wifiLock = ignore {
                 context.wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL,
-                        "ExhFavoritesSyncWifi")
+                        "teh:ExhFavoritesSyncWifi")
+            }
+
+            // Do not update galleries while syncing favorites
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                EHentaiUpdateWorker.cancelBackground(context)
             }
 
             storage.getRealm().use { realm ->
@@ -128,11 +152,11 @@ class FavoritesSyncHelper(val context: Context) {
             }
         } catch(e: IgnoredException) {
             //Do not display error as this error has already been reported
-            Timber.w(e, "Ignoring exception!")
+            logger.w( "Ignoring exception!", e)
             return
         } catch (e: Exception) {
             status.onNext(FavoritesSyncStatus.Error("Unknown error: ${e.message}"))
-            Timber.e(e, "Sync error!")
+            logger.e( "Sync error!", e)
             return
         } finally {
             //Release wake + wifi locks
@@ -143,6 +167,11 @@ class FavoritesSyncHelper(val context: Context) {
             ignore {
                 wifiLock?.release()
                 wifiLock = null
+            }
+
+            // Update galleries again!
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                EHentaiUpdateWorker.scheduleBackground(context)
             }
         }
 
@@ -231,7 +260,7 @@ class FavoritesSyncHelper(val context: Context) {
                     break
                 }
             } catch (e: Exception) {
-                Timber.e(e, "Sync network error!")
+                logger.w( "Sync network error!", e)
             }
         }
 
@@ -270,12 +299,12 @@ class FavoritesSyncHelper(val context: Context) {
         }
 
         //Apply additions
-        resetThrottle()
+        throttleManager.resetThrottle()
         changeSet.added.forEachIndexed { index, it ->
             status.onNext(FavoritesSyncStatus.Processing("Adding gallery ${index + 1} of ${changeSet.added.size} to remote server",
                     needWarnThrottle()))
 
-            throttle()
+            throttleManager.throttle()
 
             addGalleryRemote(errorList, it)
         }
@@ -291,7 +320,7 @@ class FavoritesSyncHelper(val context: Context) {
 
             //Consider both EX and EH sources
             listOf(db.getManga(url, EXH_SOURCE_ID),
-                    db.getManga(url, EH_METADATA_SOURCE_ID)).forEach {
+                    db.getManga(url, EH_SOURCE_ID)).forEach {
                 val manga = it.executeAsBlocking()
 
                 if(manga?.favorite == true) {
@@ -311,19 +340,26 @@ class FavoritesSyncHelper(val context: Context) {
         val categories = db.getCategories().executeAsBlocking()
 
         //Apply additions
-        resetThrottle()
+        throttleManager.resetThrottle()
         changeSet.added.forEachIndexed { index, it ->
             status.onNext(FavoritesSyncStatus.Processing("Adding gallery ${index + 1} of ${changeSet.added.size} to local library",
                     needWarnThrottle()))
 
-            throttle()
+            throttleManager.throttle()
 
             //Import using gallery adder
             val result = galleryAdder.addGallery("${exh.baseUrl}${it.getUrl()}",
                     true,
-                    EXH_SOURCE_ID)
+                    exh,
+                    throttleManager::throttle)
 
             if(result is GalleryAddEvent.Fail) {
+                if(result is GalleryAddEvent.Fail.NotFound) {
+                    XLog.e("Remote gallery does not exist, skipping: %s!", it.getUrl())
+                    // Skip this gallery, it no longer exists
+                    return@forEachIndexed
+                }
+
                 val errorString = "Failed to add gallery to local database: " + when (result) {
                     is GalleryAddEvent.Fail.Error -> "'${it.title}' ${result.logMessage}"
                     is GalleryAddEvent.Fail.UnknownType -> "'${it.title}' (${result.galleryUrl}) is not a valid gallery!"
@@ -349,32 +385,12 @@ class FavoritesSyncHelper(val context: Context) {
                 }
     }
 
-    fun throttle() {
-        //Throttle requests if necessary
-        val now = System.currentTimeMillis()
-        val timeDiff = now - lastThrottleTime
-        if(timeDiff < throttleTime)
-            Thread.sleep(throttleTime - timeDiff)
-
-        if(throttleTime < THROTTLE_MAX)
-            throttleTime += THROTTLE_INC
-
-        lastThrottleTime = System.currentTimeMillis()
-    }
-
-    fun resetThrottle() {
-        lastThrottleTime = 0
-        throttleTime = 0
-    }
-
     fun needWarnThrottle()
-            = throttleTime >= THROTTLE_WARN
+            = throttleManager.throttleTime >= THROTTLE_WARN
 
     class IgnoredException : RuntimeException()
 
     companion object {
-        private const val THROTTLE_MAX = 5000
-        private const val THROTTLE_INC = 10
         private const val THROTTLE_WARN = 1000
     }
 }
@@ -382,9 +398,14 @@ class FavoritesSyncHelper(val context: Context) {
 sealed class FavoritesSyncStatus(val message: String) {
     class Error(message: String) : FavoritesSyncStatus(message)
     class Idle : FavoritesSyncStatus("Waiting for sync to start")
+    sealed class BadLibraryState(message: String) : FavoritesSyncStatus(message) {
+        class MangaInMultipleCategories(val manga: Manga,
+                                        val categories: List<Category>):
+                BadLibraryState("The gallery: ${manga.title} is in more than one category (${categories.joinToString { it.name }})!")
+    }
     class Initializing : FavoritesSyncStatus("Initializing sync")
     class Processing(message: String, isThrottle: Boolean = false) : FavoritesSyncStatus(if(isThrottle)
-        (message + "\n\nSync is currently throttling (to avoid being banned from ExHentai) and may take a long time to complete.")
+        "$message\n\nSync is currently throttling (to avoid being banned from ExHentai) and may take a long time to complete."
     else
         message)
     class CompleteWithErrors(messages: List<String>) : FavoritesSyncStatus(messages.joinToString("\n"))

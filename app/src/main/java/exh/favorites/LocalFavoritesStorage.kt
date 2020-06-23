@@ -5,7 +5,7 @@ import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.source.online.all.EHentai
 import exh.EH_SOURCE_ID
 import exh.EXH_SOURCE_ID
-import exh.metadata.models.ExGalleryMetadata
+import exh.metadata.metadata.EHentaiSearchMetadata
 import io.realm.Realm
 import io.realm.RealmConfiguration
 import uy.kohesive.injekt.injectLazy
@@ -111,17 +111,21 @@ class LocalFavoritesStorage {
     }.mapNotNull {
                 FavoriteEntry().apply {
                     title = it.second.title
-                    gid = ExGalleryMetadata.galleryId(it.second.url)
-                    token = ExGalleryMetadata.galleryToken(it.second.url)
+                    gid = EHentaiSearchMetadata.galleryId(it.second.url)
+                    token = EHentaiSearchMetadata.galleryToken(it.second.url)
                     category = it.first
 
-                    if(this.category > 9)
+                    if(this.category > MAX_CATEGORIES)
                         return@mapNotNull null
                 }
             }
 
     private fun validateDbManga(manga: Manga)
             = manga.favorite && (manga.source == EH_SOURCE_ID || manga.source == EXH_SOURCE_ID)
+
+    companion object {
+        const val MAX_CATEGORIES = 9
+    }
 }
 
 data class ChangeSet(val added: List<FavoriteEntry>,

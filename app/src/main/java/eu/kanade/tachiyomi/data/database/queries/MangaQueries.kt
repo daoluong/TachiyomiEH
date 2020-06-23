@@ -6,14 +6,12 @@ import com.pushtorefresh.storio.sqlite.queries.RawQuery
 import eu.kanade.tachiyomi.data.database.DbProvider
 import eu.kanade.tachiyomi.data.database.models.LibraryManga
 import eu.kanade.tachiyomi.data.database.models.Manga
-import eu.kanade.tachiyomi.data.database.resolvers.LibraryMangaGetResolver
-import eu.kanade.tachiyomi.data.database.resolvers.MangaFavoritePutResolver
-import eu.kanade.tachiyomi.data.database.resolvers.MangaFlagsPutResolver
-import eu.kanade.tachiyomi.data.database.resolvers.MangaLastUpdatedPutResolver
+import eu.kanade.tachiyomi.data.database.resolvers.*
 import eu.kanade.tachiyomi.data.database.tables.CategoryTable
 import eu.kanade.tachiyomi.data.database.tables.ChapterTable
 import eu.kanade.tachiyomi.data.database.tables.MangaCategoryTable
 import eu.kanade.tachiyomi.data.database.tables.MangaTable
+import exh.metadata.sql.tables.SearchMetadataTable
 
 interface MangaQueries : DbProvider {
 
@@ -80,6 +78,16 @@ interface MangaQueries : DbProvider {
             .withPutResolver(MangaFavoritePutResolver())
             .prepare()
 
+    fun updateMangaViewer(manga: Manga) = db.put()
+            .`object`(manga)
+            .withPutResolver(MangaViewerPutResolver())
+            .prepare()
+
+    fun updateMangaTitle(manga: Manga) = db.put()
+            .`object`(manga)
+            .withPutResolver(MangaTitlePutResolver())
+            .prepare()
+
     fun deleteManga(manga: Manga) = db.delete().`object`(manga).prepare()
 
     fun deleteMangas(mangas: List<Manga>) = db.delete().objects(mangas).prepare()
@@ -108,4 +116,42 @@ interface MangaQueries : DbProvider {
 
     fun getTotalChapterManga() = db.get().listOfObjects(Manga::class.java)
             .withQuery(RawQuery.builder().query(getTotalChapterMangaQuery()).observesTables(MangaTable.TABLE).build()).prepare();
+
+    fun getMangaWithMetadata() = db.get()
+            .listOfObjects(Manga::class.java)
+            .withQuery(RawQuery.builder()
+                    .query("""
+                        SELECT ${MangaTable.TABLE}.* FROM ${MangaTable.TABLE}
+                        INNER JOIN ${SearchMetadataTable.TABLE}
+                            ON ${MangaTable.TABLE}.${MangaTable.COL_ID} = ${SearchMetadataTable.TABLE}.${SearchMetadataTable.COL_MANGA_ID}
+                        ORDER BY ${MangaTable.TABLE}.${MangaTable.COL_ID}
+                    """.trimIndent())
+                    .build())
+            .prepare()
+
+    fun getFavoriteMangaWithMetadata() = db.get()
+            .listOfObjects(Manga::class.java)
+            .withQuery(RawQuery.builder()
+                    .query("""
+                        SELECT ${MangaTable.TABLE}.* FROM ${MangaTable.TABLE}
+                        INNER JOIN ${SearchMetadataTable.TABLE}
+                            ON ${MangaTable.TABLE}.${MangaTable.COL_ID} = ${SearchMetadataTable.TABLE}.${SearchMetadataTable.COL_MANGA_ID}
+                        WHERE ${MangaTable.TABLE}.${MangaTable.COL_FAVORITE} = 1
+                        ORDER BY ${MangaTable.TABLE}.${MangaTable.COL_ID}
+                    """.trimIndent())
+                    .build())
+            .prepare()
+
+    fun getIdsOfFavoriteMangaWithMetadata() = db.get()
+            .cursor()
+            .withQuery(RawQuery.builder()
+                    .query("""
+                        SELECT ${MangaTable.TABLE}.${MangaTable.COL_ID} FROM ${MangaTable.TABLE}
+                        INNER JOIN ${SearchMetadataTable.TABLE}
+                            ON ${MangaTable.TABLE}.${MangaTable.COL_ID} = ${SearchMetadataTable.TABLE}.${SearchMetadataTable.COL_MANGA_ID}
+                        WHERE ${MangaTable.TABLE}.${MangaTable.COL_FAVORITE} = 1
+                        ORDER BY ${MangaTable.TABLE}.${MangaTable.COL_ID}
+                    """.trimIndent())
+                    .build())
+            .prepare()
 }

@@ -131,6 +131,10 @@ class LibraryPresenter(
 
             // Filter when there are no downloads.
             if (filterDownloaded) {
+                // Local manga are always downloaded
+                if (item.manga.source == LocalSource.ID) {
+                    return@f true
+                }
                 // Don't bother with directory checking if download count has been set.
                 if (item.downloadCount != -1) {
                     return@f item.downloadCount > 0
@@ -186,7 +190,7 @@ class LibraryPresenter(
 
         val sortFn: (LibraryItem, LibraryItem) -> Int = { i1, i2 ->
             when (sortingMode) {
-                LibrarySort.ALPHA -> i1.manga.title.compareTo(i2.manga.title)
+                LibrarySort.ALPHA -> i1.manga.title.compareTo(i2.manga.title, true)
                 LibrarySort.LAST_READ -> {
                     // Get index of manga, set equal to list if size unknown.
                     val manga1LastRead = lastReadManga[i1.manga.id!!] ?: lastReadManga.size

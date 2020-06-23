@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.data.download
 
 import android.content.Context
 import android.webkit.MimeTypeMap
+import com.elvishew.xlog.XLog
 import com.hippo.unifile.UniFile
 import com.jakewharton.rxrelay.BehaviorRelay
 import com.jakewharton.rxrelay.PublishRelay
@@ -14,14 +15,13 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.source.online.fetchAllImageUrlsFromPageList
 import eu.kanade.tachiyomi.util.*
-import kotlinx.coroutines.experimental.async
+import kotlinx.coroutines.async
 import okhttp3.Response
 import rx.Observable
 import rx.android.schedulers.AndroidSchedulers
 import rx.schedulers.Schedulers
 import rx.subscriptions.CompositeSubscription
 import timber.log.Timber
-import uy.kohesive.injekt.injectLazy
 
 /**
  * This class is the one in charge of downloading chapters.
@@ -35,27 +35,24 @@ import uy.kohesive.injekt.injectLazy
  * @param context the application context.
  * @param provider the downloads directory provider.
  * @param cache the downloads cache, used to add the downloads to the cache after their completion.
+ * @param sourceManager the source manager.
  */
 class Downloader(
         private val context: Context,
         private val provider: DownloadProvider,
-        private val cache: DownloadCache
+        private val cache: DownloadCache,
+        private val sourceManager: SourceManager
 ) {
 
     /**
      * Store for persisting downloads across restarts.
      */
-    private val store = DownloadStore(context)
+    private val store = DownloadStore(context, sourceManager)
 
     /**
      * Queue where active downloads are kept.
      */
     val queue = DownloadQueue(store)
-
-    /**
-     * Source manager.
-     */
-    private val sourceManager: SourceManager by injectLazy()
 
     /**
      * Notifier for the downloader state and progress.
@@ -288,6 +285,16 @@ class Downloader(
                 .doOnNext { ensureSuccessfulDownload(download, mangaDir, tmpDir, chapterDirname) }
                 // If the page list threw, it will resume here
                 .onErrorReturn { error ->
+                    // [EXH]
+                    XLog.w("> Download error!", error)
+                    XLog.w("> (source.id: %s, source.name: %s, manga.id: %s, manga.url: %s, chapter.id: %s, chapter.url: %s)",
+                            download.source.id,
+                            download.source.name,
+                            download.manga.id,
+                            download.manga.url,
+                            download.chapter.id,
+                            download.chapter.url)
+
                     download.status = Download.ERROR
                     notifier.onError(error.message, download.chapter.name)
                     download
@@ -359,6 +366,15 @@ class Downloader(
                         val extension = getImageExtension(response, file)
                         file.renameTo("$filename.$extension")
                     } catch (e: Exception) {
+                        // [EXH]
+                        XLog.w("> Failed to fetch image!", e)
+                        XLog.w("> (source.id: %s, source.name: %s, page.index: %s, page.url: %s, page.imageUrl: %s)",
+                                source.id,
+                                source.name,
+                                page.index,
+                                page.url,
+                                page.imageUrl)
+
                         response.close()
                         file.delete()
                         throw e
@@ -382,7 +398,7 @@ class Downloader(
             // Else guess from the uri.
             ?: context.contentResolver.getType(file.uri)
             // Else read magic numbers.
-            ?: DiskUtil.findImageMime { file.openInputStream() }
+            ?: ImageUtil.findImageType { file.openInputStream() }?.mime
 
         return MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "jpg"
     }

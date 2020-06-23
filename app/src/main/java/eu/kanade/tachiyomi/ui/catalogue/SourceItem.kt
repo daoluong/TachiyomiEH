@@ -1,8 +1,10 @@
 package eu.kanade.tachiyomi.ui.catalogue
 
+import android.support.v7.widget.RecyclerView
 import android.view.View
 import eu.davidea.flexibleadapter.FlexibleAdapter
 import eu.davidea.flexibleadapter.items.AbstractSectionableItem
+import eu.davidea.flexibleadapter.items.IFlexible
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.source.CatalogueSource
 
@@ -12,7 +14,7 @@ import eu.kanade.tachiyomi.source.CatalogueSource
  * @param source Instance of [CatalogueSource] containing source information.
  * @param header The header for this item.
  */
-data class SourceItem(val source: CatalogueSource, val header: LangItem? = null) :
+data class SourceItem(val source: CatalogueSource, val header: LangItem? = null, val showButtons: Boolean) :
         AbstractSectionableItem<SourceHolder, LangItem>(header) {
 
     /**
@@ -25,14 +27,14 @@ data class SourceItem(val source: CatalogueSource, val header: LangItem? = null)
     /**
      * Creates a new view holder for this item.
      */
-    override fun createViewHolder(view: View, adapter: FlexibleAdapter<*>): SourceHolder {
-        return SourceHolder(view, adapter as CatalogueAdapter)
+    override fun createViewHolder(view: View, adapter: FlexibleAdapter<IFlexible<RecyclerView.ViewHolder>>): SourceHolder {
+        return SourceHolder(view, adapter as CatalogueAdapter, showButtons)
     }
 
     /**
      * Binds this item to the given view holder.
      */
-    override fun bindViewHolder(adapter: FlexibleAdapter<*>, holder: SourceHolder,
+    override fun bindViewHolder(adapter: FlexibleAdapter<IFlexible<RecyclerView.ViewHolder>>, holder: SourceHolder,
                                 position: Int, payloads: List<Any?>?) {
 
         holder.bind(this)

@@ -2,26 +2,28 @@ package eu.kanade.tachiyomi.ui.main
 
 import android.animation.ObjectAnimator
 import android.app.ActivityManager
-import android.app.Service
+import android.app.SearchManager
 import android.app.usage.UsageStatsManager
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.support.v4.view.GravityCompat
 import android.support.v4.widget.DrawerLayout
 import android.support.v7.graphics.drawable.DrawerArrowDrawable
 import android.support.v7.widget.Toolbar
 import android.view.ViewGroup
 import com.bluelinelabs.conductor.*
-import eu.kanade.tachiyomi.Migrations
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
 import eu.kanade.tachiyomi.data.preference.getOrDefault
 import eu.kanade.tachiyomi.ui.base.activity.BaseActivity
 import eu.kanade.tachiyomi.ui.base.controller.*
 import eu.kanade.tachiyomi.ui.catalogue.CatalogueController
+import eu.kanade.tachiyomi.ui.catalogue.global_search.CatalogueSearchController
 import eu.kanade.tachiyomi.ui.download.DownloadController
 import eu.kanade.tachiyomi.ui.extension.ExtensionController
 import eu.kanade.tachiyomi.ui.library.LibraryController
@@ -29,27 +31,23 @@ import eu.kanade.tachiyomi.ui.manga.MangaController
 import eu.kanade.tachiyomi.ui.recent_updates.RecentChaptersController
 import eu.kanade.tachiyomi.ui.recently_read.RecentlyReadController
 import eu.kanade.tachiyomi.ui.setting.SettingsMainController
-import exh.metadata.loadAllMetadata
 import exh.uconfig.WarnConfigureDialogController
 import exh.ui.batchadd.BatchAddController
 import exh.ui.lock.LockChangeHandler
 import exh.ui.lock.LockController
 import exh.ui.lock.lockEnabled
 import exh.ui.lock.notifyLockSecurity
-import exh.ui.migration.MetadataFetchDialog
-import exh.util.defRealm
 import kotlinx.android.synthetic.main.main_activity.*
 import uy.kohesive.injekt.injectLazy
 import android.text.TextUtils
 import android.view.View
-import eu.kanade.tachiyomi.source.SourceManager
-import eu.kanade.tachiyomi.source.online.all.Hitomi
 import eu.kanade.tachiyomi.util.vibrate
-import exh.HITOMI_SOURCE_ID
-import rx.schedulers.Schedulers
+import exh.EXHMigrations
+import exh.eh.EHentaiUpdateWorker
+import exh.ui.migration.MetadataFetchDialog
 import timber.log.Timber
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
+import java.util.*
+import kotlin.collections.ArrayList
 
 
 class MainActivity : BaseActivity() {
@@ -72,10 +70,40 @@ class MainActivity : BaseActivity() {
 
     lateinit var tabAnimator: TabsAnimator
 
+    // Idle-until-urgent
+    private var firstPaint = false
+    private val iuuQueue = LinkedList<() -> Unit>()
+
+    private fun initWhenIdle(task: () -> Unit) {
+        // Avoid sync issues by enforcing main thread
+        if(Looper.myLooper() != Looper.getMainLooper())
+            throw IllegalStateException("Can only be called on main thread!")
+
+        if(firstPaint) {
+            task()
+        } else {
+            iuuQueue += task
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+
+        if(!firstPaint) {
+            drawer.postDelayed({
+                if(!firstPaint) {
+                    firstPaint = true
+                    iuuQueue.forEach { it() }
+                }
+            }, 1000)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(when (preferences.theme()) {
             2 -> R.style.Theme_Tachiyomi_Dark
             3 -> R.style.Theme_Tachiyomi_Amoled
+            4 -> R.style.Theme_Tachiyomi_DarkBlue
             else -> R.style.Theme_Tachiyomi
         })
         super.onCreate(savedInstanceState)
@@ -156,13 +184,15 @@ class MainActivity : BaseActivity() {
         })
 
         // --> EH
-        //Hook long press hamburger menu to lock
-        getToolbarNavigationIcon(toolbar)?.setOnLongClickListener {
-            if(lockEnabled(preferences)) {
-                doLock(true)
-                vibrate(50) // Notify user of lock
-                true
-            } else false
+        initWhenIdle {
+            //Hook long press hamburger menu to lock
+            getToolbarNavigationIcon(toolbar)?.setOnLongClickListener {
+                if(lockEnabled(preferences)) {
+                    doLock(true)
+                    vibrate(50) // Notify user of lock
+                    true
+                } else false
+            }
         }
 
         //Show lock
@@ -172,16 +202,10 @@ class MainActivity : BaseActivity() {
                 doLock()
 
                 //Check lock security
-                notifyLockSecurity(this)
+                initWhenIdle {
+                    notifyLockSecurity(this)
+                }
             }
-        }
-
-        // Early hitomi.la refresh
-        if(preferences.eh_hl_earlyRefresh().getOrDefault()) {
-            (Injekt.get<SourceManager>().get(HITOMI_SOURCE_ID) as Hitomi)
-                    .ensureCacheLoaded(false)
-                    .subscribeOn(Schedulers.computation())
-                    .subscribe()
         }
         // <-- EH
 
@@ -189,21 +213,34 @@ class MainActivity : BaseActivity() {
 
         if (savedInstanceState == null) {
             // Show changelog if needed
-            if (Migrations.upgrade(preferences)) {
+            // TODO
+//            if (Migrations.upgrade(preferences)) {
+//                ChangelogDialogController().showDialog(router)
+//            }
+
+            // EXH -->
+            // Perform EXH specific migrations
+            if(EXHMigrations.upgrade(preferences)) {
                 ChangelogDialogController().showDialog(router)
             }
 
-            // Migrate metadata if empty (EH)
-            if(!defRealm {
-                it.loadAllMetadata().any {
-                    it.value.isNotEmpty()
+            initWhenIdle {
+                // Migrate metadata if empty (EH)
+                if(!preferences.migrateLibraryAsked().getOrDefault()) {
+                    MetadataFetchDialog().askMigration(this, false)
                 }
-            }) MetadataFetchDialog().askMigration(this, false)
 
-            // Upload settings
-            if(preferences.enableExhentai().getOrDefault()
-                    && preferences.eh_showSettingsUploadWarning().getOrDefault())
-                WarnConfigureDialogController.uploadSettings(router)
+                // Upload settings
+                if(preferences.enableExhentai().getOrDefault()
+                        && preferences.eh_showSettingsUploadWarning().getOrDefault())
+                    WarnConfigureDialogController.uploadSettings(router)
+
+                // Scheduler uploader job if required
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    EHentaiUpdateWorker.scheduleBackground(this)
+                }
+            }
+            // EXH <--
         }
     }
 
@@ -226,6 +263,29 @@ class MainActivity : BaseActivity() {
             SHORTCUT_DOWNLOADS -> {
                 if (router.backstack.none { it.controller() is DownloadController }) {
                     setSelectedDrawerItem(R.id.nav_drawer_downloads)
+                }
+            }
+            Intent.ACTION_SEARCH, "com.google.android.gms.actions.SEARCH_ACTION" -> {
+                //If the intent match the "standard" Android search intent
+                // or the Google-specific search intent (triggered by saying or typing "search *query* on *Tachiyomi*" in Google Search/Google Assistant)
+
+                //Get the search query provided in extras, and if not null, perform a global search with it.
+                val query = intent.getStringExtra(SearchManager.QUERY)
+                if (query != null && !query.isEmpty()) {
+                    if (router.backstackSize > 1) {
+                        router.popToRoot()
+                    }
+                    router.pushController(CatalogueSearchController(query).withFadeTransaction())
+                }
+            }
+            INTENT_SEARCH -> {
+                val query = intent.getStringExtra(INTENT_SEARCH_QUERY)
+                val filter = intent.getStringExtra(INTENT_SEARCH_FILTER)
+                if (query != null && !query.isEmpty()) {
+                    if (router.backstackSize > 1) {
+                        router.popToRoot()
+                    }
+                    router.pushController(CatalogueSearchController(query, filter).withFadeTransaction())
                 }
             }
             else -> return false
@@ -264,7 +324,7 @@ class MainActivity : BaseActivity() {
     fun getToolbarNavigationIcon(toolbar: Toolbar): View? {
         try {
             //check if contentDescription previously was set
-            val hadContentDescription = TextUtils.isEmpty(toolbar.navigationContentDescription)
+            val hadContentDescription = !TextUtils.isEmpty(toolbar.navigationContentDescription)
             val contentDescription = if (!hadContentDescription) toolbar.navigationContentDescription else "navigationIcon"
             toolbar.navigationContentDescription = contentDescription
 
@@ -277,7 +337,7 @@ class MainActivity : BaseActivity() {
             val navIcon = potentialViews.firstOrNull()
 
             //Clear content description if not previously present
-            if (hadContentDescription)
+            if (!hadContentDescription)
                 toolbar.navigationContentDescription = null
             return navIcon
         } catch(t: Throwable) {
@@ -403,6 +463,10 @@ class MainActivity : BaseActivity() {
         const val SHORTCUT_CATALOGUES = "eu.kanade.tachiyomi.SHOW_CATALOGUES"
         const val SHORTCUT_DOWNLOADS = "eu.kanade.tachiyomi.SHOW_DOWNLOADS"
         const val SHORTCUT_MANGA = "eu.kanade.tachiyomi.SHOW_MANGA"
+
+        const val INTENT_SEARCH = "eu.kanade.tachiyomi.SEARCH"
+        const val INTENT_SEARCH_QUERY = "query"
+        const val INTENT_SEARCH_FILTER = "filter"
     }
 
 }

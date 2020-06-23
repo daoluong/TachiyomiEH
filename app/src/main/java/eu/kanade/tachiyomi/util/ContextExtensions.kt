@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.util
 import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.job.JobScheduler
 import android.content.*
 import android.content.Context.VIBRATOR_SERVICE
 import android.content.pm.PackageManager
@@ -10,17 +11,24 @@ import android.content.res.Resources
 import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.net.Uri
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.support.annotation.AttrRes
+import android.support.annotation.RequiresApi
 import android.support.annotation.StringRes
+import android.support.customtabs.CustomTabsIntent
 import android.support.v4.app.NotificationCompat
 import android.support.v4.content.ContextCompat
 import android.support.v4.content.LocalBroadcastManager
 import android.widget.Toast
 import com.nononsenseapps.filepicker.FilePickerActivity
+import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.widget.CustomLayoutPickerActivity
-
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 
 
 /**
@@ -30,7 +38,9 @@ import eu.kanade.tachiyomi.widget.CustomLayoutPickerActivity
  * @param duration the duration of the toast. Defaults to short.
  */
 fun Context.toast(@StringRes resource: Int, duration: Int = Toast.LENGTH_SHORT) {
-    Toast.makeText(this, resource, duration).show()
+    GlobalScope.launch(Dispatchers.Main) {
+        Toast.makeText(this@toast, resource, duration).show()
+    }
 }
 
 /**
@@ -40,7 +50,9 @@ fun Context.toast(@StringRes resource: Int, duration: Int = Toast.LENGTH_SHORT) 
  * @param duration the duration of the toast. Defaults to short.
  */
 fun Context.toast(text: String?, duration: Int = Toast.LENGTH_SHORT) {
-    Toast.makeText(this, text.orEmpty(), duration).show()
+    GlobalScope.launch(Dispatchers.Main) {
+        Toast.makeText(this@toast, text.orEmpty(), duration).show()
+    }
 }
 
 /**
@@ -83,7 +95,7 @@ fun Context.hasPermission(permission: String)
  *
  * @param resource the attribute.
  */
-fun Context.getResourceColor(@StringRes resource: Int): Int {
+fun Context.getResourceColor(@AttrRes resource: Int): Int {
     val typedArray = obtainStyledAttributes(intArrayOf(resource))
     val attrValue = typedArray.getColor(0, 0)
     typedArray.recycle()
@@ -127,11 +139,12 @@ val Context.wifiManager: WifiManager
     get() = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
 // --> EH
-/**
- * Property to get the wifi manager from the context.
- */
 val Context.clipboardManager: ClipboardManager
     get() = applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+
+val Context.jobScheduler: JobScheduler
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    get() = applicationContext.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
 // <-- EH
 
 /**
@@ -179,6 +192,21 @@ fun Context.isServiceRunning(serviceClass: Class<*>): Boolean {
     @Suppress("DEPRECATION")
     return manager.getRunningServices(Integer.MAX_VALUE)
             .any { className == it.service.className }
+}
+
+/**
+ * Opens a URL in a custom tab.
+ */
+fun Context.openInBrowser(url: String) {
+    try {
+        val url = Uri.parse(url)
+        val intent = CustomTabsIntent.Builder()
+                .setToolbarColor(getResourceColor(R.attr.colorPrimary))
+                .build()
+        intent.launchUrl(this, url)
+    } catch (e: Exception) {
+        toast(e.message)
+    }
 }
 
 fun Context.vibrate(time: Long) {

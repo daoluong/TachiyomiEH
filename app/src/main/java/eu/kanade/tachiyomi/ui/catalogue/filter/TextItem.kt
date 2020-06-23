@@ -1,33 +1,40 @@
 package eu.kanade.tachiyomi.ui.catalogue.filter
 
 import android.support.design.widget.TextInputLayout
+import android.support.v7.widget.RecyclerView
 import android.view.View
 import android.widget.EditText
 import eu.davidea.flexibleadapter.FlexibleAdapter
 import eu.davidea.flexibleadapter.items.AbstractFlexibleItem
+import eu.davidea.flexibleadapter.items.IFlexible
 import eu.davidea.viewholders.FlexibleViewHolder
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.widget.SimpleTextWatcher
 
 open class TextItem(val filter: Filter.Text) : AbstractFlexibleItem<TextItem.Holder>() {
+    private val textWatcher = object : SimpleTextWatcher() {
+        override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {
+            filter.state = s.toString()
+        }
+    }
 
     override fun getLayoutRes(): Int {
         return R.layout.navigation_view_text
     }
 
-    override fun createViewHolder(view: View, adapter: FlexibleAdapter<*>): Holder {
+    override fun createViewHolder(view: View, adapter: FlexibleAdapter<IFlexible<RecyclerView.ViewHolder>>): Holder {
         return Holder(view, adapter)
     }
 
-    override fun bindViewHolder(adapter: FlexibleAdapter<*>, holder: Holder, position: Int, payloads: List<Any?>?) {
+    override fun bindViewHolder(adapter: FlexibleAdapter<IFlexible<RecyclerView.ViewHolder>>, holder: Holder, position: Int, payloads: List<Any?>?) {
         holder.wrapper.hint = filter.name
         holder.edit.setText(filter.state)
-        holder.edit.addTextChangedListener(object : SimpleTextWatcher() {
-            override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {
-                filter.state = s.toString()
-            }
-        })
+        holder.edit.addTextChangedListener(textWatcher)
+    }
+
+    override fun unbindViewHolder(adapter: FlexibleAdapter<IFlexible<RecyclerView.ViewHolder>>, holder: Holder, position: Int) {
+        holder.edit.removeTextChangedListener(textWatcher)
     }
 
     override fun equals(other: Any?): Boolean {

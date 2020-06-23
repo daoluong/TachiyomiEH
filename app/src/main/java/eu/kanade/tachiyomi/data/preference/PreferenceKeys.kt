@@ -15,6 +15,8 @@ object PreferenceKeys {
 
     const val showPageNumber = "pref_show_page_number_key"
 
+    const val trueColor = "pref_true_color_key"
+
     const val fullscreen = "fullscreen"
 
     const val keepScreenOn = "pref_keep_screen_on_key"
@@ -27,11 +29,11 @@ object PreferenceKeys {
 
     const val colorFilterValue = "color_filter_value"
 
+    const val colorFilterMode = "color_filter_mode"
+
     const val defaultViewer = "pref_default_viewer_key"
 
     const val imageScaleType = "pref_image_scale_type_key"
-
-    const val imageDecoder = "image_decoder"
 
     const val zoomStart = "pref_zoom_start_key"
 
@@ -42,6 +44,8 @@ object PreferenceKeys {
     const val cropBordersWebtoon = "crop_borders_webtoon"
 
     const val readWithTapping = "reader_tap"
+
+    const val readWithLongTap = "reader_long_tap"
 
     const val readWithVolumeKeys = "reader_volume_keys"
 
@@ -54,8 +58,6 @@ object PreferenceKeys {
     const val updateOnlyNonCompleted = "pref_update_only_non_completed_key"
 
     const val autoUpdateTrack = "pref_auto_update_manga_sync_key"
-
-    const val askUpdateTrack = "pref_ask_update_manga_sync_key"
 
     const val lastUsedCatalogueSource = "last_catalogue_source"
 
@@ -85,6 +87,8 @@ object PreferenceKeys {
 
     const val libraryUpdateCategories = "library_update_categories"
 
+    const val libraryUpdatePrioritization = "library_update_prioritization"
+
     const val filterDownloaded = "pref_filter_downloaded_key"
 
     const val filterUnread = "pref_filter_unread_key"
@@ -106,6 +110,8 @@ object PreferenceKeys {
     const val lang = "app_language"
 
     const val defaultCategory = "default_category"
+
+    const val skipRead = "skip_read"
 
     const val downloadBadge = "display_download_badge"
 
@@ -157,19 +163,9 @@ object PreferenceKeys {
 
     const val eh_ts_aspNetCookie = "eh_ts_aspNetCookie"
 
-    const val eh_showSettingsUploadWarning = "eh_showSettingsUploadWarning1"
-
-    const val eh_hl_earlyRefresh = "eh_hl_early_refresh"
-
-    const val eh_hl_refreshFrequency = "eh_hl_refresh_frequency"
-
-    const val eh_hl_lastRefresh = "eh_hl_last_refresh"
-
-    const val eh_hl_lastRealmIndex = "eh_hl_lastRealmIndex"
+    const val eh_showSettingsUploadWarning = "eh_showSettingsUploadWarning2"
 
     const val eh_expandFilters = "eh_expand_filters"
-
-    const val eh_askCategoryOnLongPress = "eh_ask_category_on_long_press"
 
     const val eh_readerThreads = "eh_reader_threads"
 
@@ -182,4 +178,24 @@ object PreferenceKeys {
     const val eh_preserveReadingPosition = "eh_preserve_reading_position"
 
     const val eh_incogWebview = "eh_incognito_webview"
+
+    const val eh_autoSolveCaptchas = "eh_autosolve_captchas"
+
+    const val eh_delegateSources = "eh_delegate_sources"
+
+    const val eh_showTransitionPages = "eh_show_transition_pages"
+
+    const val eh_logLevel = "eh_log_level"
+
+    const val eh_enableSourceBlacklist = "eh_enable_source_blacklist"
+
+    const val eh_autoUpdateFrequency = "eh_auto_update_frequency"
+
+    const val eh_autoUpdateRestrictions = "eh_auto_update_restrictions"
+
+    const val eh_autoUpdateStats = "eh_auto_update_stats"
+
+    const val eh_aggressivePageLoading = "eh_aggressive_page_loading"
+
+    const val eh_hl_useHighQualityThumbs = "eh_hl_hq_thumbs"
 }

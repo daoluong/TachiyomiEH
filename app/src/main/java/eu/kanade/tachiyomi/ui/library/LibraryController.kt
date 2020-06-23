@@ -38,10 +38,8 @@ import eu.kanade.tachiyomi.util.inflate
 import eu.kanade.tachiyomi.util.toast
 import exh.favorites.FavoritesIntroDialog
 import exh.favorites.FavoritesSyncStatus
-import exh.metadata.loadAllMetadata
-import exh.metadata.models.SearchableGalleryMetadata
-import io.realm.Realm
-import io.realm.RealmResults
+import exh.ui.LoaderManager
+import exh.ui.migration.manga.design.MigrationDesignController
 import kotlinx.android.synthetic.main.library_controller.*
 import kotlinx.android.synthetic.main.main_activity.*
 import rx.Subscription
@@ -51,7 +49,6 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.IOException
 import java.util.concurrent.TimeUnit
-import kotlin.reflect.KClass
 
 
 class LibraryController(
@@ -102,6 +99,8 @@ class LibraryController(
      */
     val libraryMangaRelay: BehaviorRelay<LibraryMangaEvent> = BehaviorRelay.create()
 
+    val selectAllRelay: PublishRelay<Int> = PublishRelay.create()
+
     /**
      * Number of manga per row in grid mode.
      */
@@ -130,16 +129,13 @@ class LibraryController(
     private var searchViewSubscription: Subscription? = null
 
     // --> EH
-    //Cached realm
-    var realm: Realm? = null
-    //Cached metadata
-    var meta: Map<KClass<out SearchableGalleryMetadata>, RealmResults<out SearchableGalleryMetadata>>? = null
     //Sync dialog
     private var favSyncDialog: MaterialDialog? = null
     //Old sync status
     private var oldSyncStatus: FavoritesSyncStatus? = null
     //Favorites
     private var favoritesSyncSubscription: Subscription? = null
+    val loaderManager = LoaderManager()
     // <-- EH
 
     init {
@@ -158,16 +154,6 @@ class LibraryController(
     override fun inflateView(inflater: LayoutInflater, container: ViewGroup): View {
         return inflater.inflate(R.layout.library_controller, container, false)
     }
-
-    // --> EH
-    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup, savedViewState: Bundle?): View {
-        //Load realm
-        realm = Realm.getDefaultInstance()?.apply {
-            meta = loadAllMetadata()
-        }
-        return super.onCreateView(inflater, container, savedViewState)
-    }
-    // <-- EH
 
     override fun onViewCreated(view: View) {
         super.onViewCreated(view)
@@ -188,6 +174,12 @@ class LibraryController(
         if (selectedMangas.isNotEmpty()) {
             createActionModeIfNeeded()
         }
+
+        // EXH -->
+        loaderManager.loadingChangeListener = {
+            library_progress.visibility = if(it) View.VISIBLE else View.GONE
+        }
+        // EXH <--
     }
 
     override fun onChangeStarted(handler: ControllerChangeHandler, type: ControllerChangeType) {
@@ -204,13 +196,10 @@ class LibraryController(
         actionMode = null
         tabsVisibilitySubscription?.unsubscribe()
         tabsVisibilitySubscription = null
+        // EXH -->
+        loaderManager.loadingChangeListener = null
+        // EXH <--
         super.onDestroyView(view)
-
-        // --> EH
-        //Clean up realm
-        realm?.close()
-        meta = null
-        // <-- EH
     }
 
     override fun createSecondaryDrawer(drawer: DrawerLayout): ViewGroup {
@@ -449,6 +438,17 @@ class LibraryController(
             }
             R.id.action_move_to_category -> showChangeMangaCategoriesDialog()
             R.id.action_delete -> showDeleteMangaDialog()
+            R.id.action_select_all -> {
+                adapter?.categories?.getOrNull(library_pager.currentItem)?.id?.let {
+                    selectAllRelay.call(it)
+                }
+            }
+            R.id.action_auto_source_migration -> {
+                router.pushController(MigrationDesignController.create(
+                        selectedMangas.mapNotNull { it.id }
+                ).withFadeTransaction())
+                destroyActionModeIfNeeded()
+            }
             else -> return false
         }
         return true
@@ -598,6 +598,25 @@ class LibraryController(
 
                 favSyncDialog?.dismiss()
                 favSyncDialog = null
+            }
+            is FavoritesSyncStatus.BadLibraryState.MangaInMultipleCategories -> {
+                releaseSyncLocks()
+
+                favSyncDialog?.dismiss()
+                favSyncDialog = buildDialog()
+                        ?.title("Favorites sync error")
+                        ?.content(status.message + " Sync will not start until the gallery is in only one category.")
+                        ?.cancelable(false)
+                        ?.positiveText("Show gallery")
+                        ?.onPositive { _, _ ->
+                            openManga(status.manga)
+                            presenter.favoritesSync.status.onNext(FavoritesSyncStatus.Idle())
+                        }
+                        ?.negativeText("Ok")
+                        ?.onNegative { _, _ ->
+                            presenter.favoritesSync.status.onNext(FavoritesSyncStatus.Idle())
+                        }
+                        ?.show()
             }
             is FavoritesSyncStatus.Error -> {
                 releaseSyncLocks()

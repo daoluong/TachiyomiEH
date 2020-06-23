@@ -3,11 +3,12 @@ package eu.kanade.tachiyomi.ui.setting
 import android.app.Dialog
 import android.os.Bundle
 import android.support.v7.preference.PreferenceScreen
+import android.text.Html
 import android.view.View
-import android.widget.Toast
 import com.afollestad.materialdialogs.MaterialDialog
 import com.bluelinelabs.conductor.RouterTransaction
 import com.bluelinelabs.conductor.changehandler.FadeChangeHandler
+import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.cache.ChapterCache
 import eu.kanade.tachiyomi.data.database.DatabaseHelper
@@ -15,12 +16,14 @@ import eu.kanade.tachiyomi.data.library.LibraryUpdateService
 import eu.kanade.tachiyomi.data.library.LibraryUpdateService.Target
 import eu.kanade.tachiyomi.data.preference.PreferenceKeys
 import eu.kanade.tachiyomi.network.NetworkHelper
+import eu.kanade.tachiyomi.source.SourceManager.Companion.DELEGATED_SOURCES
 import eu.kanade.tachiyomi.ui.base.controller.DialogController
+import eu.kanade.tachiyomi.ui.base.controller.withFadeTransaction
 import eu.kanade.tachiyomi.ui.library.LibraryController
 import eu.kanade.tachiyomi.util.toast
+import exh.debug.SettingsDebugController
+import exh.log.EHLogLevel
 import exh.ui.migration.MetadataFetchDialog
-import exh.util.realmTrans
-import io.realm.Realm
 import rx.Observable
 import rx.android.schedulers.AndroidSchedulers
 import rx.schedulers.Schedulers
@@ -48,7 +51,7 @@ class SettingsAdvancedController : SettingsController() {
             titleRes = R.string.pref_clear_cookies
 
             onClick {
-                network.cookies.removeAll()
+                network.cookieManager.removeAll()
                 activity?.toast(R.string.cookies_cleared)
             }
         }
@@ -74,6 +77,8 @@ class SettingsAdvancedController : SettingsController() {
 
             onClick { LibraryUpdateService.start(context, target = Target.TRACKING) }
         }
+
+        // --> EXH
         preferenceCategory {
             title = "Gallery metadata"
             isPersistent = false
@@ -98,14 +103,54 @@ class SettingsAdvancedController : SettingsController() {
                 summary = "Clear all library metadata. Disables tag searching in the library"
 
                 onClick {
-                    realmTrans {
-                        it.deleteAll()
+                    db.inTransaction {
+                        db.deleteAllSearchMetadata().executeAsBlocking()
+                        db.deleteAllSearchTags().executeAsBlocking()
+                        db.deleteAllSearchTitle().executeAsBlocking()
                     }
 
                     context.toast("Library metadata cleared!")
                 }
             }
         }
+        preferenceCategory {
+            title = "Developer tools"
+            isPersistent = false
+
+            switchPreference {
+                title = "Enable delegated sources"
+                key = PreferenceKeys.eh_delegateSources
+                defaultValue = true
+                summary = "Apply ${context.getString(R.string.app_name)} enhancements to the following sources if they are installed: ${DELEGATED_SOURCES.values.map { it.sourceName }.distinct().joinToString()}"
+            }
+
+            intListPreference {
+                key = PreferenceKeys.eh_logLevel
+                title = "Log level"
+
+                entries = EHLogLevel.values().map {
+                    "${it.name.toLowerCase().capitalize()} (${it.description})"
+                }.toTypedArray()
+                entryValues = EHLogLevel.values().mapIndexed { index, _ -> "$index" }.toTypedArray()
+                defaultValue = "0"
+
+                summary = "Changing this can impact app performance. Force-restart app after changing. Current value: %s"
+            }
+
+            switchPreference {
+                title = "Enable source blacklist"
+                key = PreferenceKeys.eh_enableSourceBlacklist
+                defaultValue = true
+                summary = "Hide extensions/sources that are incompatible with ${context.getString(R.string.app_name)}. Force-restart app after changing."
+            }
+
+            preference {
+                title = "Open debug menu"
+                summary = Html.fromHtml("DO NOT TOUCH THIS MENU UNLESS YOU KNOW WHAT YOU ARE DOING! <font color='red'>IT CAN CORRUPT YOUR LIBRARY!</font>")
+                onClick { router.pushController(SettingsDebugController().withFadeTransaction()) }
+            }
+        }
+        // <-- EXH
     }
 
     private fun clearChapterCache() {

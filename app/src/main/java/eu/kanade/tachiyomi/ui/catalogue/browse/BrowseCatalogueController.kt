@@ -7,6 +7,7 @@ import android.support.v4.widget.DrawerLayout
 import android.support.v7.widget.*
 import android.view.*
 import com.afollestad.materialdialogs.MaterialDialog
+import com.elvishew.xlog.XLog
 import com.f2prateek.rx.preferences.Preference
 import com.jakewharton.rxbinding.support.v7.widget.queryTextChangeEvents
 import eu.davidea.flexibleadapter.FlexibleAdapter
@@ -17,13 +18,17 @@ import eu.kanade.tachiyomi.data.database.models.Manga
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.base.controller.NucleusController
 import eu.kanade.tachiyomi.ui.base.controller.SecondaryDrawerController
 import eu.kanade.tachiyomi.ui.base.controller.withFadeTransaction
+import eu.kanade.tachiyomi.ui.catalogue.CatalogueController
 import eu.kanade.tachiyomi.ui.library.ChangeMangaCategoriesDialog
 import eu.kanade.tachiyomi.ui.manga.MangaController
+import eu.kanade.tachiyomi.ui.manga.info.MangaWebViewController
 import eu.kanade.tachiyomi.util.*
 import eu.kanade.tachiyomi.widget.AutofitRecyclerView
+import exh.EXHSavedSearch
 import kotlinx.android.synthetic.main.catalogue_controller.*
 import kotlinx.android.synthetic.main.main_activity.*
 import rx.Observable
@@ -46,11 +51,15 @@ open class BrowseCatalogueController(bundle: Bundle) :
         ChangeMangaCategoriesDialog.Listener {
 
     constructor(source: CatalogueSource,
-                searchQuery: String? = null) : this(Bundle().apply {
+                searchQuery: String? = null,
+                smartSearchConfig: CatalogueController.SmartSearchConfig? = null) : this(Bundle().apply {
         putLong(SOURCE_ID_KEY, source.id)
 
         if(searchQuery != null)
             putString(SEARCH_QUERY_KEY, searchQuery)
+
+        if (smartSearchConfig != null)
+            putParcelable(SMART_SEARCH_CONFIG_KEY, smartSearchConfig)
     })
 
     /**
@@ -141,6 +150,90 @@ open class BrowseCatalogueController(bundle: Bundle) :
 
         drawer.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED, Gravity.END)
 
+        // EXH -->
+        navView.setSavedSearches(presenter.loadSearches())
+        navView.onSaveClicked = {
+            MaterialDialog.Builder(navView.context)
+                    .title("Save current search query?")
+                    .input("My search name", "") { _, searchName ->
+                        val oldSavedSearches = presenter.loadSearches()
+                        if(searchName.isNotBlank()
+                                && oldSavedSearches.size < CatalogueNavigationView.MAX_SAVED_SEARCHES) {
+                            val newSearches = oldSavedSearches + EXHSavedSearch(
+                                    searchName.toString().trim(),
+                                    presenter.query,
+                                    presenter.sourceFilters
+                            )
+                            presenter.saveSearches(newSearches)
+                            navView.setSavedSearches(newSearches)
+                        }
+                    }
+                    .positiveText("Save")
+                    .negativeText("Cancel")
+                    .cancelable(true)
+                    .canceledOnTouchOutside(true)
+                    .show()
+        }
+
+        navView.onSavedSearchClicked = cb@{ indexToSearch ->
+            val savedSearches = presenter.loadSearches()
+
+            val search = savedSearches.getOrNull(indexToSearch)
+
+            if(search == null) {
+                MaterialDialog.Builder(navView.context)
+                        .title("Failed to load saved searches!")
+                        .content("An error occurred while loading your saved searches.")
+                        .cancelable(true)
+                        .canceledOnTouchOutside(true)
+                        .show()
+                return@cb
+            }
+
+            presenter.sourceFilters = FilterList(search.filterList)
+            navView.setFilters(presenter.filterItems)
+            val allDefault = presenter.sourceFilters == presenter.source.getFilterList()
+
+            showProgressBar()
+            adapter?.clear()
+            drawer.closeDrawer(Gravity.END)
+            presenter.restartPager(search.query, if (allDefault) FilterList() else presenter.sourceFilters)
+            activity?.invalidateOptionsMenu()
+        }
+
+        navView.onSavedSearchDeleteClicked = cb@{ indexToDelete, name ->
+            val savedSearches = presenter.loadSearches()
+
+            val search = savedSearches.getOrNull(indexToDelete)
+
+            if(search == null || search.name != name) {
+                MaterialDialog.Builder(navView.context)
+                        .title("Failed to delete saved search!")
+                        .content("An error occurred while deleting the search.")
+                        .cancelable(true)
+                        .canceledOnTouchOutside(true)
+                        .show()
+                return@cb
+            }
+
+            MaterialDialog.Builder(navView.context)
+                    .title("Delete saved search query?")
+                    .content("Are you sure you wish to delete your saved search query: '${search.name}'?")
+                    .positiveText("Cancel")
+                    .negativeText("Confirm")
+                    .onNegative { _, _ ->
+                        val newSearches = savedSearches.filterIndexed { index, _ ->
+                            index != indexToDelete
+                        }
+                        presenter.saveSearches(newSearches)
+                        navView.setSavedSearches(newSearches)
+                    }
+                    .cancelable(true)
+                    .canceledOnTouchOutside(true)
+                    .show()
+        }
+        // EXH <--
+
         navView.onSearchClicked = {
             val allDefault = presenter.sourceFilters == presenter.source.getFilterList()
             showProgressBar()
@@ -204,7 +297,7 @@ open class BrowseCatalogueController(bundle: Bundle) :
         catalogue_view.addView(recycler, 1)
 
         if (oldPosition != RecyclerView.NO_POSITION) {
-            recycler.layoutManager.scrollToPosition(oldPosition)
+            recycler.layoutManager?.scrollToPosition(oldPosition)
         }
         this.recycler = recycler
     }
@@ -246,10 +339,10 @@ open class BrowseCatalogueController(bundle: Bundle) :
         menu.findItem(R.id.action_set_filter).apply {
             icon.mutate()
             if (presenter.sourceFilters.isEmpty()) {
-                isEnabled = false
+//                isEnabled = false [EXH]
                 icon.alpha = 128
             } else {
-                isEnabled = true
+//                isEnabled = true [EXH]
                 icon.alpha = 255
             }
         }
@@ -264,13 +357,36 @@ open class BrowseCatalogueController(bundle: Bundle) :
         }
     }
 
+    override fun onPrepareOptionsMenu(menu: Menu) {
+        super.onPrepareOptionsMenu(menu)
+
+        val isHttpSource = presenter.source is HttpSource
+        menu.findItem(R.id.action_open_in_browser).isVisible = isHttpSource
+        menu.findItem(R.id.action_open_in_web_view).isVisible = isHttpSource
+    }
+
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
             R.id.action_display_mode -> swapDisplayMode()
             R.id.action_set_filter -> navView?.let { activity?.drawer?.openDrawer(Gravity.END) }
+            R.id.action_open_in_browser -> openInBrowser()
+            R.id.action_open_in_web_view -> openInWebView()
             else -> return super.onOptionsItemSelected(item)
         }
         return true
+    }
+
+    private fun openInBrowser() {
+        val source = presenter.source as? HttpSource ?: return
+
+        activity?.openInBrowser(source.baseUrl)
+    }
+
+    private fun openInWebView() {
+        val source = presenter.source as? HttpSource ?: return
+
+        router.pushController(MangaWebViewController(source.id, source.baseUrl)
+                .withFadeTransaction())
     }
 
     /**
@@ -316,7 +432,11 @@ open class BrowseCatalogueController(bundle: Bundle) :
      * @param error the error received.
      */
     fun onAddPageError(error: Throwable) {
-        Timber.e(error)
+        XLog.w("> Failed to load next catalogue page!", error)
+        XLog.w("> (source.id: %s, source.name: %s)",
+                presenter.source.id,
+                presenter.source.name)
+
         val adapter = adapter ?: return
         adapter.onLoadMoreComplete(null)
         hideProgressBar()
@@ -444,9 +564,11 @@ open class BrowseCatalogueController(bundle: Bundle) :
      * @param position the position of the element clicked.
      * @return true if the item should be selected, false otherwise.
      */
-    override fun onItemClick(position: Int): Boolean {
+    override fun onItemClick(view: View, position: Int): Boolean {
         val item = adapter?.getItem(position) as? CatalogueItem ?: return false
-        router.pushController(MangaController(item.manga, true).withFadeTransaction())
+        router.pushController(MangaController(item.manga,
+                true,
+                args.getParcelable(SMART_SEARCH_CONFIG_KEY)).withFadeTransaction())
 
         return false
     }
@@ -513,6 +635,9 @@ open class BrowseCatalogueController(bundle: Bundle) :
     protected companion object {
         const val SOURCE_ID_KEY = "sourceId"
         const val SEARCH_QUERY_KEY = "searchQuery"
+        // EXH -->
+        const val SMART_SEARCH_CONFIG_KEY = "smartSearchConfig"
+        // EXH <--
     }
 
 }
